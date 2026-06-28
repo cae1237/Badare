@@ -2,8 +2,17 @@
 <html lang="pt-BR" data-theme="dark">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Badaré · CRM</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Badaré Nutrição Clínica</title>
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#0a0e13" />
+<meta name="description" content="Badaré Nutrição Clínica — gestão de atendimentos, conversões e entregas." />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Badaré" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
+<link rel="icon" type="image/png" href="icon-192.png" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600;9..40,700&display=swap" rel="stylesheet" />
@@ -51,9 +60,15 @@ button{font-family:inherit}
 
 /* MAIN */
 .main{padding:24px 30px 50px;min-width:0}
-.topbar{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:24px;flex-wrap:wrap}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:24px;flex-wrap:wrap}
+.topbar .head{display:flex;align-items:center;gap:12px;min-width:0}
 .topbar .head h2{font-family:'Space Grotesk';font-size:23px;font-weight:600;letter-spacing:-0.02em}
 .topbar .head p{color:var(--text-muted);font-size:13.5px;margin-top:3px}
+.menu-btn{display:none;width:42px;height:42px;border-radius:11px;background:var(--surface);border:1px solid var(--border);color:var(--text);place-items:center;cursor:pointer;flex-shrink:0}
+.menu-btn svg{width:20px;height:20px}
+.menu-btn:active{background:var(--surface-2)}
+.nav-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);backdrop-filter:blur(2px);z-index:65;opacity:0;pointer-events:none;transition:opacity .3s var(--ease)}
+.nav-overlay.open{opacity:1;pointer-events:auto}
 .toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .search{position:relative}
 .search input{background:var(--surface);border:1px solid var(--border);color:var(--text);padding:10px 14px 10px 38px;border-radius:11px;font-family:inherit;font-size:13.5px;width:230px;transition:.25s var(--ease)}
@@ -304,18 +319,42 @@ tbody tr:hover{background:var(--surface-2)}
 @keyframes rise{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
 
 @media(max-width:1180px){.kpis{grid-template-columns:repeat(2,1fr)}.col-8,.col-7,.col-6,.col-5,.col-4,.col-3{grid-column:span 12}.stat-strip{grid-template-columns:repeat(2,1fr)}}
-@media(max-width:920px){.app{grid-template-columns:1fr}.sidebar{display:none}}
-@media(max-width:560px){.kpis{grid-template-columns:1fr}.main{padding:18px}.search input{width:140px}}
+/* tablet/mobile: sidebar vira gaveta deslizante */
+@media(max-width:920px){
+  .app{grid-template-columns:1fr}
+  .sidebar{position:fixed;left:0;top:0;height:100dvh;width:264px;z-index:70;transform:translateX(-100%);transition:transform .3s var(--ease);border-right:1px solid var(--border-strong)}
+  .sidebar.open{transform:translateX(0);box-shadow:var(--shadow-lg)}
+  .menu-btn{display:grid}
+  .main{padding:18px 18px 60px}
+  .form-grid{grid-template-columns:1fr}
+}
+@media(max-width:600px){
+  .kpis{grid-template-columns:1fr}
+  .topbar{gap:12px}
+  .topbar .head h2{font-size:20px}
+  .topbar .head p{display:none}
+  .toolbar{width:100%;justify-content:flex-start}
+  .search{flex:1;min-width:0}
+  .search input{width:100%}
+  .search input:focus{width:100%}
+  .btn.primary#btnNovo span,#btnNovo{padding:9px 12px}
+  .panel{padding:16px}
+  .insights{grid-template-columns:1fr}
+  .cards-grid{grid-template-columns:1fr}
+  .drawer{width:100vw}
+}
+@media(max-width:380px){.stat-strip{grid-template-columns:1fr}}
 @media(prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;transition-duration:.01ms!important}}
 </style>
 </head>
 <body>
 <a href="#dashboard" class="sr-only">Pular para o conteúdo</a>
 <div class="app">
-  <aside class="sidebar">
+  <div class="nav-overlay" id="navOverlay"></div>
+  <aside class="sidebar" id="sidebar">
     <div class="brand">
       <div class="logo">B</div>
-      <div><h1>Badaré</h1><span>CRM · Nutrição</span></div>
+      <div><h1>Badaré</h1><span>Nutrição Clínica</span></div>
     </div>
     <nav id="nav" aria-label="Principal"></nav>
     <div class="sidebar-foot">
@@ -328,7 +367,10 @@ tbody tr:hover{background:var(--surface-2)}
 
   <main class="main" id="main">
     <div class="topbar">
-      <div class="head"><h2 id="pageTitle">Dashboard</h2><p id="pageSub">Visão geral da operação</p></div>
+      <div class="head">
+        <button class="menu-btn" id="menuBtn" aria-label="Abrir menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg></button>
+        <div><h2 id="pageTitle">Dashboard</h2><p id="pageSub">Visão geral da operação</p></div>
+      </div>
       <div class="toolbar">
         <a href="#novo" class="btn primary" id="btnNovo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>Novo</a>
         <div class="search">

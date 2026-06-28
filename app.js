@@ -142,7 +142,13 @@ function closeDrawer(){
   $('#drawerOverlay').classList.remove('open');
 }
 $('#drawerOverlay').addEventListener('click',closeDrawer);
-document.addEventListener('keydown',e=>{ if(e.key==='Escape'){closeDrawer();$('#notifPanel').classList.remove('open');} });
+document.addEventListener('keydown',e=>{ if(e.key==='Escape'){closeDrawer();closeSidebar();$('#notifPanel').classList.remove('open');} });
+
+/* ---------- menu lateral (mobile) ---------- */
+function openSidebar(){ $('#sidebar').classList.add('open'); $('#navOverlay').classList.add('open'); }
+function closeSidebar(){ $('#sidebar').classList.remove('open'); $('#navOverlay').classList.remove('open'); }
+$('#menuBtn').addEventListener('click',openSidebar);
+$('#navOverlay').addEventListener('click',closeSidebar);
 
 function clientDrawer(id){
   const a = ATEND.find(x=>x.id===id); if(!a) return;
@@ -1083,6 +1089,7 @@ function render(){
   animateBars();
   $('#main').scrollTop=0;
   buildNav();
+  closeSidebar();
 }
 window.addEventListener('hashchange',render);
 
@@ -1117,3 +1124,8 @@ async function boot(){
   recompute(); buildNav(); updateNotif(); render();
 }
 boot();
+
+/* PWA — registra o service worker (instalável + offline) */
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
+}
