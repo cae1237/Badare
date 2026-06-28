@@ -1,4 +1,4 @@
-# Conectar o Badaré CRM ao Supabase (modo nuvem)
+# Conectar o Badare CRM ao Supabase (modo nuvem)
 
 Enquanto `config.js` estiver sem credenciais, o app roda em **modo local** (dados só no navegador). Siga os passos abaixo para ativar o **modo nuvem**, com dados 24h compartilhados pelo time.
 
@@ -21,8 +21,8 @@ Menu → **Project Settings** → **API**:
 Edite `config.js` na raiz do projeto:
 ```js
 window.BADARE_CONFIG = {
-  supabaseUrl: "https://svfscujgepzvvjgsylvz.supabase.co/rest/v1/",
-  supabaseKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN2ZnNjdWpnZXB6dnZqZ3N5bHZ6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI1NzcwMTIsImV4cCI6MjA5ODE1MzAxMn0.WMiX6DykBgltas75AjDUKqPZS5uXFr5ARpCv6o6d7O0"   // anon public
+  supabaseUrl: "https://xxxx.supabase.co",
+  supabaseKey: "eyJhbGciOiJI...."   // anon public
 };
 ```
 Recarregue o app. Em **Configurações** o modo deve aparecer como **Nuvem (Supabase)**, e a tela **Novo Atendimento** mostrará o banner verde. A partir daí todo cadastro vai para a nuvem.
