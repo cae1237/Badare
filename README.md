@@ -20,17 +20,32 @@ Frontend estático (HTML/CSS/JS puro, sem build). Dados em **modo local** (naveg
 | `supabase/` | `schema.sql`, `seed.sql` e guia de conexão |
 | `server.js` | Servidor estático para rodar localmente |
 
-## Acesso (login)
+## Tudo no Supabase (nada local)
 
-O app exige login. No **primeiro acesso** é criado um administrador padrão:
+O app é **100% nuvem**: atendimentos, entregas, usuários e até as marcações de
+contato/Kanban ficam no Supabase. Sem Supabase configurado, o app **não abre**
+(mostra uma tela pedindo para configurar) — nada é gravado no navegador.
+
+Único dado que fica no navegador: a **sessão** (quem está logado neste aparelho)
+e a **preferência de tema** (claro/escuro) — nenhum dado de negócio.
+
+### Configurar (uma vez)
+1. No Supabase, abra **SQL Editor** e rode o `supabase/schema.sql` inteiro
+   (cria tabelas, funções de usuário e o admin padrão). Depois rode `seed.sql`
+   para importar os atendimentos.
+2. Em **Settings → API**, copie a **Project URL** e a chave **anon public**.
+3. Cole em `config.js` (`supabaseUrl` e `supabaseKey`), salve e recarregue.
+
+### Acesso (login)
+O `schema.sql` cria um administrador padrão:
 
 - **E-mail:** `admin@badare.com`
 - **Senha:** `Badare@2026`
 
-> Altere a senha e cadastre o time em **Usuários** logo após entrar.
+> Troque a senha e cadastre o time em **Usuários** logo após entrar.
 > Perfis: **Admin** (acesso total + gestão de usuários) e **Operacional** (uso do dia a dia).
-> As senhas são guardadas com hash **SHA-256 + salt** (nunca em texto puro). No modo local os usuários
-> ficam neste navegador; para acesso seguro entre dispositivos, ative o **Supabase Auth**.
+> As senhas são verificadas/gravadas com **bcrypt dentro do Supabase** (pgcrypto),
+> via funções RPC — o hash nunca chega ao navegador.
 
 ## Tema claro/escuro
 

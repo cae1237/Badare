@@ -10,13 +10,27 @@ let ATEND = [];
 let ENTREGAS = [];
 const DBMETA = (window.BADARE_DATA && window.BADARE_DATA.meta) || {};
 
-/* ---------- persistência local (ações do usuário) ---------- */
-const LS_KEY = 'badare_crm_state_v1';
-const store = JSON.parse(localStorage.getItem(LS_KEY) || '{}');
-store.contatados = store.contatados || {};   // id -> true
-store.stage = store.stage || {};             // cliente -> estágio do kanban
-store.refDate = store.refDate || maxDate();   // data de referência (simulação)
-function persist(){ localStorage.setItem(LS_KEY, JSON.stringify(store)); }
+/* ---------- estado compartilhado (no Supabase, nada local) ----------
+   Marcações de "contatado", estágios do Kanban e data de referência ficam
+   na tabela app_kv (chave 'crm_state'). O objeto abaixo é só o cache em
+   memória da sessão atual; persist() sincroniza com a nuvem (debounced). */
+const store = { contatados:{}, stage:{}, refDate:null };
+async function loadState(){
+  let s = {};
+  try { s = (await BadareDB.kvGet('crm_state', {})) || {}; }
+  catch(err){ console.error('Falha ao carregar estado compartilhado:', err); }
+  store.contatados = s.contatados || {};
+  store.stage = s.stage || {};
+  store.refDate = s.refDate || maxDate();
+}
+let _persistT = null;
+function persist(){
+  if(_persistT) clearTimeout(_persistT);
+  _persistT = setTimeout(()=>{
+    BadareDB.kvSet('crm_state', { contatados:store.contatados, stage:store.stage, refDate:store.refDate })
+      .catch(err=>console.error('Falha ao salvar estado:', err));
+  }, 400);
+}
 
 function maxDate(){
   let m = '2026-01-01';
@@ -972,7 +986,7 @@ VIEW.config = ()=>{
           <div class="mini-stat"><b>${fmtN(ATEND.length)}</b><small>Atendimentos</small></div>
           <div class="mini-stat"><b>${fmtN(ENTREGAS.length)}</b><small>Entregas</small></div>
           <div class="mini-stat"><b>${fmtN(clientAgg().length)}</b><small>Clientes únicos</small></div>
-          <div class="mini-stat"><b>${fmtN(window.BadareDB?BadareDB.localCount():0)}</b><small>Adicionados localmente</small></div>
+          <div class="mini-stat"><b>${fmtN(ATEND.filter(a=>a.compra).length)}</b><small>Compras</small></div>
         </div>
         ${window.BadareDB&&BadareDB.mode==='supabase'
           ? '<p style="font-size:12.5px;color:var(--text-dim);margin-top:14px">Conectado ao Supabase — dados compartilhados com o time em tempo real. Clique abaixo para confirmar leitura e gravação.</p>'
@@ -983,11 +997,10 @@ VIEW.config = ()=>{
         <div id="supaTestOut" style="font-size:12.5px;margin-top:12px;line-height:1.6"></div>
       </div>
       <div class="panel col-6"><div class="panel-head"><div><h3>Ações</h3><p>Gerenciamento dos dados</p></div></div>
-        <p style="font-size:13.5px;color:var(--text-muted);line-height:1.6;margin-bottom:14px">Contatos marcados, estágios do Kanban e a data de referência ficam salvos neste navegador.</p>
+        <p style="font-size:13.5px;color:var(--text-muted);line-height:1.6;margin-bottom:14px">Contatos marcados, estágios do Kanban e a data de referência são compartilhados com o time (salvos no Supabase).</p>
         <div style="display:flex;gap:10px;flex-wrap:wrap">
           <button class="btn" onclick="exportCSV()">Exportar atendimentos (CSV)</button>
           <button class="btn ghost" onclick="resetState()" style="color:var(--danger)">Resetar marcações</button>
-          ${window.BadareDB&&BadareDB.mode==='local'?'<button class="btn ghost" onclick="clearLocalRecords()" style="color:var(--danger)">Limpar registros locais</button>':''}
         </div>
       </div>
     </div>
@@ -1015,23 +1028,23 @@ async function testSupabase(){
 window.testSupabase=testSupabase;
 function resetState(){ store.contatados={}; store.stage={}; persist(); toast('Marcações resetadas'); buildNav(); updateNotif(); render(); }
 window.resetState=resetState;
-async function clearLocalRecords(){
-  if(!confirm('Remover todos os atendimentos adicionados localmente? (não afeta a base original)')) return;
-  BadareDB.clearLocal(); toast('Registros locais removidos'); await boot();
-}
-window.clearLocalRecords=clearLocalRecords;
 
 /* ============================================================
    USUÁRIOS (admin) — cadastro, edição e exclusão
    ============================================================ */
-VIEW.usuarios = ()=>{
+let USERS_CACHE = [];
+VIEW.usuarios = async ()=>{
   if(!BadareAuth.isAdmin()){ location.hash='#dashboard'; return; }
-  const users = BadareAuth.list().sort((a,b)=>a.name.localeCompare(b.name));
+  $('#view').innerHTML = '<div class="empty" style="padding:70px"><div>Carregando usuários…</div></div>';
+  let users;
+  try{ users = (await BadareAuth.list()).sort((a,b)=>a.name.localeCompare(b.name)); }
+  catch(ex){ $('#view').innerHTML=`<div class="empty" style="padding:60px"><div style="color:var(--danger);font-weight:600;margin-bottom:8px">Erro ao carregar usuários</div><div style="color:var(--text-muted);font-size:13px">${esc(ex.message||ex)}</div></div>`; return; }
+  USERS_CACHE = users;
   const cur = BadareAuth.currentUser();
   $('#view').innerHTML = `<div class="view">
     <div class="mode-banner cloud" style="background:rgba(167,139,250,.07);border-color:rgba(167,139,250,.22);color:var(--accent-3)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 5v6c0 5 3.4 7.7 8 9 4.6-1.3 8-4 8-9V5z"/></svg>
-      <span><b style="font-weight:600">Gestão de acessos.</b>&nbsp;Senhas são guardadas com hash (SHA-256 + salt), nunca em texto puro. Para acesso seguro entre dispositivos, ative o Supabase Auth.</span>
+      <span><b style="font-weight:600">Gestão de acessos no Supabase.</b>&nbsp;Usuários ficam no banco; as senhas são verificadas e gravadas com <b>bcrypt</b> dentro do Supabase — o hash nunca chega ao navegador.</span>
     </div>
     <div class="grid">
       <div class="panel col-7">
@@ -1072,10 +1085,8 @@ VIEW.usuarios = ()=>{
   </div>`;
   $('#formUser').addEventListener('submit', submitUser);
 };
-let editingUserId = null;
 function userEdit(id){
-  const u = BadareAuth.list().find(x=>x.id===id); if(!u) return;
-  editingUserId = id;
+  const u = USERS_CACHE.find(x=>x.id===id); if(!u) return;
   $('#u_id').value = id;
   $('#u_name').value = u.name;
   $('#u_email').value = u.email;
@@ -1088,9 +1099,9 @@ function userEdit(id){
   $('#u_name').scrollIntoView({block:'center',behavior:'smooth'});
 }
 async function userRemove(id){
-  const u = BadareAuth.list().find(x=>x.id===id); if(!u) return;
+  const u = USERS_CACHE.find(x=>x.id===id); if(!u) return;
   if(!confirm(`Excluir o usuário "${u.name}" (${u.email})? Esta ação não pode ser desfeita.`)) return;
-  try{ BadareAuth.remove(id); toast('Usuário excluído'); buildNav(); VIEW.usuarios(); }
+  try{ await BadareAuth.remove(id); toast('Usuário excluído'); buildNav(); VIEW.usuarios(); }
   catch(ex){ toast(ex.message); }
 }
 async function submitUser(e){
@@ -1106,7 +1117,7 @@ async function submitUser(e){
   try{
     if(id){ await BadareAuth.update(id,{name,email,role,password:pass||undefined}); toast('Usuário atualizado'); }
     else { await BadareAuth.create({name,email,password:pass,role}); toast('Usuário criado'); }
-    editingUserId=null; buildNav(); VIEW.usuarios();
+    buildNav(); VIEW.usuarios();
   }catch(ex){ toast(ex.message); }
 }
 window.userEdit=userEdit; window.userRemove=userRemove; window.submitUser=submitUser;
@@ -1132,13 +1143,9 @@ function fieldFollowup(){
 }
 VIEW.novo = ()=>{
   const today=new Date().toISOString().slice(0,10);
-  const mode=window.BadareDB?BadareDB.mode:'local';
-  const localN=window.BadareDB?BadareDB.localCount():0;
   $('#view').innerHTML=`<div class="view">
-    <div class="mode-banner ${mode==='supabase'?'cloud':'local'}">
-      ${mode==='supabase'
-        ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg><b style="font-weight:600">Modo nuvem (Supabase) ativo.</b>&nbsp;Os dados serão salvos online e compartilhados com o time em tempo real.'
-        : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg><b style="font-weight:600">Modo local (validação).</b>&nbsp;Salvando neste navegador. Para compartilhar com o time, configure o Supabase em <code>config.js</code>.'}
+    <div class="mode-banner cloud">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg><b style="font-weight:600">Conectado ao Supabase.</b>&nbsp;Os dados são salvos na nuvem e compartilhados com o time em tempo real.
     </div>
     <div class="grid">
       <div class="panel col-8">
@@ -1177,7 +1184,7 @@ VIEW.novo = ()=>{
           <div class="hi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><div>Preencher <b>Retornar em</b> coloca o cliente automaticamente na <b>Central de Retornos</b> (Kanban) e gera alertas.</div></div>
           <div class="hi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 3h5v5M21 3l-7 7"/><rect x="3" y="8" width="13" height="13" rx="2"/></svg><div>O <b>Status da conversão</b> alimenta o funil e os relatórios. Padronizar o preenchimento melhora as decisões.</div></div>
           <div class="hi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M2 12h20"/></svg><div>Os campos com sugestões puxam valores já usados, evitando digitação inconsistente.</div></div>
-          ${mode==='local'?`<div class="hi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg><div>${localN} registro(s) adicionado(s) localmente nesta sessão.</div></div>`:''}
+          <div class="hi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg><div>Ao salvar, o atendimento vai direto para o <b>Supabase</b> — visível para todo o time na hora.</div></div>
         </div>
       </div>
     </div>
@@ -1262,8 +1269,7 @@ $('#globalSearch').addEventListener('input',e=>{
   else if(q){ location.hash='#atendimentos'; }
 });
 
-/* refDate control */
-$('#refDate').value=store.refDate;
+/* refDate control (o valor é preenchido no boot, após carregar o estado) */
 $('#refDate').addEventListener('change',e=>{ store.refDate=e.target.value; persist(); buildNav(); updateNotif(); toast('Data de referência: '+fmtDateFull(e.target.value)); render(); });
 
 /* ---------- TEMA claro/escuro ---------- */
@@ -1283,21 +1289,36 @@ $('#themeBtn').addEventListener('click',()=>{
 });
 syncThemeBtn();
 
-/* init — gate de login, carrega dados (local ou Supabase) e renderiza */
+/* tela de bloqueio quando o Supabase não está configurado/conectado
+   (o app é 100% nuvem — nada é gravado localmente) */
+function showConfigError(){
+  const scr=$('#loginScreen'); if(!scr) return;
+  if($('#loginLogo') && !$('#loginLogo').innerHTML){ const m=$('.brand-mark'); if(m) $('#loginLogo').innerHTML=`<svg viewBox="0 0 500 500" fill="none">${m.innerHTML}</svg>`; }
+  $('#loginForm').style.display='none';
+  let box=$('#cfgErrBox');
+  if(!box){ box=document.createElement('div'); box.id='cfgErrBox'; box.style.cssText='text-align:center;margin-top:8px'; $('.login-card').appendChild(box); }
+  box.innerHTML=`<div class="login-err show" style="text-align:left"><b>Supabase não conectado.</b><br>${esc((window.BadareDB&&BadareDB.reason)||'Configure o Supabase.')}</div>
+    <p class="login-hint">Preencha <b>supabaseUrl</b> e <b>supabaseKey</b> (anon public) em <code>config.js</code>, salve, e recarregue. O app só funciona conectado — nada é salvo no navegador.</p>
+    <button class="btn primary" style="width:100%;justify-content:center;margin-top:6px" onclick="location.reload()">Recarregar</button>`;
+  scr.classList.add('show');
+}
+
+/* init — exige Supabase, faz login, carrega estado+dados e renderiza */
 async function boot(){
-  await BadareAuth.ensureSeed();
+  if(!window.BadareDB || BadareDB.mode!=='supabase'){ showConfigError(); return; }
   if(!BadareAuth.currentUser()){ BadareAuth.showLogin(()=>boot()); return; }
   $('#view').innerHTML='<div class="empty" style="padding:80px"><div>Carregando dados…</div></div>';
   try{
+    await loadState();
     const data = await BadareDB.load();
     ATEND = data.atendimentos || [];
     ENTREGAS = data.entregas || [];
   }catch(err){
-    console.error('Falha ao carregar via BadareDB, usando seed local:',err);
-    const seed = window.BADARE_DATA || {atendimentos:[],entregas:[]};
-    ATEND = seed.atendimentos; ENTREGAS = seed.entregas;
-    toast('Erro de conexão — exibindo dados locais.');
+    console.error('Falha ao carregar do Supabase:',err);
+    $('#view').innerHTML=`<div class="empty" style="padding:60px"><div style="color:var(--danger);font-weight:600;margin-bottom:8px">Erro ao carregar do Supabase</div><div style="color:var(--text-muted);font-size:13px">${esc(err.message||err)}</div><button class="btn" style="margin-top:16px" onclick="location.reload()">Tentar de novo</button></div>`;
+    return;
   }
+  $('#refDate').value=store.refDate;
   recompute(); buildNav(); updateNotif(); render();
 }
 boot();

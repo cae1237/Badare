@@ -27,17 +27,34 @@ window.BadareDB = (function () {
   const sb = hasSupa ? window.supabase.createClient(url, key) : null;
   if (hasSupa) reason = "";
 
-  const LS = "badare_records_v1";
-  const readLocal = () => {
-    try { return JSON.parse(localStorage.getItem(LS)) || { atendimentos: [], entregas: [] }; }
-    catch (e) { return { atendimentos: [], entregas: [] }; }
-  };
-  const writeLocal = (d) => localStorage.setItem(LS, JSON.stringify(d));
+  const requireSupa = () => { if (!hasSupa) throw new Error(reason || "Supabase não configurado."); };
 
   return {
     mode: hasSupa ? "supabase" : "local",
     reason,            // por que está em modo local (vazio = está na nuvem)
     hasConfig: !!(url && key),
+    sb,                // cliente Supabase (ou null)
+
+    /* chama uma função RPC do Supabase (usado pela camada de usuários) */
+    async rpc(fn, args) {
+      if (!hasSupa) throw new Error(reason || "Supabase não configurado.");
+      const { data, error } = await sb.rpc(fn, args || {});
+      if (error) throw new Error(error.message || String(error));
+      return data;
+    },
+
+    /* estado compartilhado (marcações de contato, kanban, data de ref.) */
+    async kvGet(chave, fallback) {
+      if (!hasSupa) return fallback;
+      const { data, error } = await sb.from("app_kv").select("valor").eq("chave", chave).maybeSingle();
+      if (error) throw new Error(error.message || String(error));
+      return data ? data.valor : fallback;
+    },
+    async kvSet(chave, valor) {
+      if (!hasSupa) return;
+      const { error } = await sb.from("app_kv").upsert({ chave, valor, updated_at: new Date().toISOString() });
+      if (error) throw new Error(error.message || String(error));
+    },
 
     /* testa a conexão de verdade: lê e grava/apaga um registro de teste.
        Retorna {ok, steps, error} com a mensagem exata do Supabase. */
@@ -61,57 +78,32 @@ window.BadareDB = (function () {
       }
     },
 
-    /* carrega toda a base (seed + adicionados no modo local; tabelas no modo nuvem) */
+    /* carrega toda a base diretamente do Supabase */
     async load() {
-      if (hasSupa) {
-        const [a, e] = await Promise.all([
-          sb.from("atendimentos").select("*").order("data", { ascending: true }),
-          sb.from("entregas").select("*").order("data", { ascending: true }),
-        ]);
-        if (a.error) throw a.error;
-        if (e.error) throw e.error;
-        return { atendimentos: a.data || [], entregas: e.data || [] };
-      }
-      const add = readLocal();
-      return {
-        atendimentos: SEED.atendimentos.concat(add.atendimentos),
-        entregas: SEED.entregas.concat(add.entregas),
-      };
+      requireSupa();
+      const [a, e] = await Promise.all([
+        sb.from("atendimentos").select("*").order("data", { ascending: true }),
+        sb.from("entregas").select("*").order("data", { ascending: true }),
+      ]);
+      if (a.error) throw a.error;
+      if (e.error) throw e.error;
+      return { atendimentos: a.data || [], entregas: e.data || [] };
     },
 
-    /* insere um atendimento */
+    /* insere um atendimento no Supabase */
     async addAtendimento(rec) {
-      if (hasSupa) {
-        const { data, error } = await sb.from("atendimentos").insert(rec).select().single();
-        if (error) throw error;
-        return data;
-      }
-      const add = readLocal();
-      rec.id = "u" + Date.now();
-      add.atendimentos.push(rec);
-      writeLocal(add);
-      return rec;
+      requireSupa();
+      const { data, error } = await sb.from("atendimentos").insert(rec).select().single();
+      if (error) throw error;
+      return data;
     },
 
-    /* insere uma entrega */
+    /* insere uma entrega no Supabase */
     async addEntrega(rec) {
-      if (hasSupa) {
-        const { data, error } = await sb.from("entregas").insert(rec).select().single();
-        if (error) throw error;
-        return data;
-      }
-      const add = readLocal();
-      rec.id = "e" + Date.now();
-      add.entregas.push(rec);
-      writeLocal(add);
-      return rec;
+      requireSupa();
+      const { data, error } = await sb.from("entregas").insert(rec).select().single();
+      if (error) throw error;
+      return data;
     },
-
-    /* registros adicionados localmente (para reset/depuração) */
-    localCount() {
-      const a = readLocal();
-      return a.atendimentos.length + a.entregas.length;
-    },
-    clearLocal() { writeLocal({ atendimentos: [], entregas: [] }); },
   };
 })();
