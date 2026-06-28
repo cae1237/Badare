@@ -1,5 +1,5 @@
 /* ============================================================
-   Badaré CRM — Camada de Dados (Data Access Layer)
+   Badare CRM — Camada de Dados (Data Access Layer)
    ------------------------------------------------------------
    Abstrai a origem dos dados. Dois modos automáticos:
    • "supabase" — se config.js tiver URL + chave válidas

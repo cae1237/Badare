@@ -1,5 +1,5 @@
 /* ============================================================
-   Badaré CRM — app.js
+   Badare CRM — app.js
    App de página única (SPA) com roteamento por hash,
    inteligência de retornos/follow-up e alertas visuais.
    ============================================================ */
@@ -99,9 +99,12 @@ const ROUTES = [
   {id:'entregas', label:'Entregas', sub:'Controle logístico e taxas', icon:'T'},
   {id:'produtos', label:'Produtos', sub:'Ranking e categorias', icon:'M20 7h-9M14 17H5'},
   {id:'relatorios', label:'Relatórios', sub:'Análises detalhadas', icon:'M12 20V10M18 20V4M6 20v-4'},
+  {grp:'Administração', admin:true},
+  {id:'usuarios', label:'Usuários', sub:'Gestão de acessos e perfis', icon:'U', admin:true},
   {id:'config', label:'Configurações', sub:'Parâmetros e regras', icon:'G'},
 ];
 const ICONS = {
+  U:'<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
   C:'<circle cx="9" cy="7" r="4"/><path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
   B:'<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
   T:'<rect x="1" y="3" width="15" height="13" rx="1"/><path d="M16 8h4l3 3v5h-7z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/>',
@@ -113,12 +116,41 @@ function iconSvg(icon){
 }
 function buildNav(){
   const cur = currentRoute();
-  $('#nav').innerHTML = ROUTES.map(r=>{
+  const admin = window.BadareAuth && BadareAuth.isAdmin();
+  $('#nav').innerHTML = ROUTES.filter(r=>!r.admin || admin).map(r=>{
     if(r.grp) return `<div class="nav-label">${r.grp}</div>`;
     const badge = r.badge && alertCount()>0 ? `<span class="badge">${alertCount()}</span>` : '';
     return `<a class="nav-item ${r.id===cur?'active':''}" href="#${r.id}">${iconSvg(r.icon)}<span>${r.label}</span>${badge}</a>`;
   }).join('');
+  buildSidebarFoot();
 }
+function buildSidebarFoot(){
+  const el = $('#sidebarFoot'); if(!el) return;
+  const u = window.BadareAuth && BadareAuth.currentUser();
+  if(!u){ el.innerHTML=''; return; }
+  const roleLabel = u.role==='admin' ? '<span class="role-pill admin">Admin</span>' : '<span class="role-pill op">Operacional</span>';
+  el.innerHTML = `
+    <div class="foot-card">
+      <div class="userchip">
+        <div class="avatar" style="background:${avatarColor(u.name)}">${initials(u.name)}</div>
+        <div style="min-width:0">
+          <div style="font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(u.name)}</div>
+          <small style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block">${esc(u.email)}</small>
+        </div>
+      </div>
+      <div style="margin-top:9px">${roleLabel}</div>
+      <div class="foot-actions">
+        ${u.role==='admin'?`<button onclick="location.hash='#usuarios'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>Usuários</button>`:''}
+        <button class="logout" onclick="doLogout()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5M21 12H9"/></svg>Sair</button>
+      </div>
+    </div>`;
+}
+function doLogout(){
+  BadareAuth.logout();
+  location.hash='#dashboard';
+  BadareAuth.showLogin(()=>boot());
+}
+window.doLogout = doLogout;
 
 /* ============================================================
    TOAST / DRAWER
@@ -169,7 +201,9 @@ function clientDrawer(id){
     ['Pagamento', a.pagamento||'—'],
     ['Entrega', a.entrega||'—'],
     ['Taxa do cliente', a.taxaCliente?fmtBR(a.taxaCliente):'—'],
+    ['Taxa da Badare', a.taxaBadare?fmtBR(a.taxaBadare):'—'],
     ['Retornar em', a.retornar?fmtDateFull(a.retornar):(a.retornarTxt||'Sem retorno')],
+    ['Follow-up', (a.followup&&a.followup.length)?a.followup.join(', '):'—'],
     ['Conversão', a.conversao||'—'],
   ];
   const done = store.contatados[a.id];
@@ -245,13 +279,13 @@ function animateBars(){ setTimeout(()=>$$('.fill').forEach(f=>{ if(f.dataset.w) 
    CHARTS
    ============================================================ */
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
-const C = ()=>({acc:css('--accent'),acc2:css('--accent-2'),acc3:css('--accent-3'),warn:css('--warn'),danger:css('--danger'),text:css('--text-muted'),grid:'rgba(255,255,255,0.05)'});
+const C = ()=>({acc:css('--accent'),acc2:css('--accent-2'),acc3:css('--accent-3'),warn:css('--warn'),danger:css('--danger'),text:css('--text-muted'),grid:css('--grid')||'rgba(255,255,255,0.05)'});
 Chart.defaults.font.family="'DM Sans',sans-serif"; Chart.defaults.font.size=12; Chart.defaults.color=C().text;
 if(window.ChartDataLabels){ Chart.register(ChartDataLabels); Chart.defaults.set('plugins.datalabels',{display:false}); }
 const legendCfg=(show=true)=>({display:show,position:'bottom',labels:{boxWidth:8,boxHeight:8,usePointStyle:true,pointStyle:'circle',padding:14,font:{size:11.5},color:css('--text-muted')}});
 // rótulos de valor
 const dlBar=(horizontal)=>({display:true,anchor:'end',align:horizontal?'right':'end',offset:2,color:css('--text'),font:{family:"'Space Grotesk'",size:11,weight:'600'},formatter:v=>v?fmtN(v):''});
-const dlLine=()=>({display:true,align:'top',offset:4,color:css('--text'),backgroundColor:'rgba(10,14,19,.7)',borderRadius:4,padding:{top:2,bottom:2,left:5,right:5},font:{family:"'Space Grotesk'",size:10.5,weight:'600'},formatter:v=>v});
+const dlLine=()=>({display:true,align:'top',offset:4,color:'#eef2f6',backgroundColor:'rgba(10,14,19,.7)',borderRadius:4,padding:{top:2,bottom:2,left:5,right:5},font:{family:"'Space Grotesk'",size:10.5,weight:'600'},formatter:v=>v});
 const dlDonut=(data)=>({display:c=>{const v=c.dataset.data[c.dataIndex];const t=c.dataset.data.reduce((s,x)=>s+x,0);return v/t>0.05;},color:'#06121a',font:{family:"'Space Grotesk'",size:12,weight:'700'},formatter:(v,c)=>{const t=c.dataset.data.reduce((s,x)=>s+x,0);return Math.round(v/t*100)+'%';}});
 const dlStack=()=>({display:c=>c.dataset.data[c.dataIndex]>0,color:'#06121a',font:{family:"'Space Grotesk'",size:10.5,weight:'700'},formatter:v=>v});
 let CHARTS=[];
@@ -961,6 +995,96 @@ async function clearLocalRecords(){
 }
 window.clearLocalRecords=clearLocalRecords;
 
+/* ============================================================
+   USUÁRIOS (admin) — cadastro, edição e exclusão
+   ============================================================ */
+VIEW.usuarios = ()=>{
+  if(!BadareAuth.isAdmin()){ location.hash='#dashboard'; return; }
+  const users = BadareAuth.list().sort((a,b)=>a.name.localeCompare(b.name));
+  const cur = BadareAuth.currentUser();
+  $('#view').innerHTML = `<div class="view">
+    <div class="mode-banner cloud" style="background:rgba(167,139,250,.07);border-color:rgba(167,139,250,.22);color:var(--accent-3)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 5v6c0 5 3.4 7.7 8 9 4.6-1.3 8-4 8-9V5z"/></svg>
+      <span><b style="font-weight:600">Gestão de acessos.</b>&nbsp;Senhas são guardadas com hash (SHA-256 + salt), nunca em texto puro. Para acesso seguro entre dispositivos, ative o Supabase Auth.</span>
+    </div>
+    <div class="grid">
+      <div class="panel col-7">
+        <div class="panel-head"><div><h3>Usuários cadastrados</h3><p>${users.length} usuário(s) · perfis Admin e Operacional</p></div></div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Usuário</th><th>E-mail</th><th>Perfil</th><th style="text-align:right">Ações</th></tr></thead>
+            <tbody>
+              ${users.map(u=>`<tr>
+                <td><div style="display:flex;align-items:center;gap:10px"><div class="avatar" style="width:30px;height:30px;font-size:11px;background:${avatarColor(u.name)}">${initials(u.name)}</div><span class="cell-strong">${esc(u.name)}${u.id===cur.id?' <span class="muted" style="font-weight:400">(você)</span>':''}</span></div></td>
+                <td class="muted">${esc(u.email)}</td>
+                <td>${u.role==='admin'?'<span class="role-pill admin">Admin</span>':'<span class="role-pill op">Operacional</span>'}</td>
+                <td><div class="u-actions" style="justify-content:flex-end">
+                  <button class="iconbtn" title="Editar" onclick="userEdit('${u.id}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg></button>
+                  <button class="iconbtn" title="Excluir" onclick="userRemove('${u.id}')" style="${u.id===cur.id?'opacity:.35;pointer-events:none':''}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></button>
+                </div></td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="panel col-5">
+        <div class="panel-head"><div><h3 id="uFormTitle">Novo usuário</h3><p>Defina o perfil de acesso</p></div></div>
+        <form id="formUser" class="form-grid" autocomplete="off" novalidate>
+          <input type="hidden" id="u_id">
+          <div class="field full" data-f="name"><label for="u_name">Nome<span class="req">*</span></label><input id="u_name" placeholder="Nome completo"><span class="err">Campo obrigatório</span></div>
+          <div class="field full" data-f="email"><label for="u_email">E-mail<span class="req">*</span></label><input id="u_email" type="email" placeholder="usuario@badare.com"><span class="err">E-mail inválido</span></div>
+          <div class="field full" data-f="password"><label for="u_pass" id="u_passLabel">Senha<span class="req">*</span></label><input id="u_pass" type="password" placeholder="Mínimo 6 caracteres"><span class="err">Mínimo 6 caracteres</span></div>
+          <div class="field full" data-f="role"><label for="u_role">Perfil<span class="req">*</span></label>
+            <select id="u_role"><option value="operacional">Operacional — uso do dia a dia</option><option value="admin">Admin — acesso total + gestão de usuários</option></select></div>
+          <div class="field full form-actions">
+            <button type="button" class="btn ghost" id="uCancel" onclick="VIEW.usuarios()">Limpar</button>
+            <button type="submit" class="btn primary" id="uSave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>Salvar usuário</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>`;
+  $('#formUser').addEventListener('submit', submitUser);
+};
+let editingUserId = null;
+function userEdit(id){
+  const u = BadareAuth.list().find(x=>x.id===id); if(!u) return;
+  editingUserId = id;
+  $('#u_id').value = id;
+  $('#u_name').value = u.name;
+  $('#u_email').value = u.email;
+  $('#u_role').value = u.role;
+  $('#u_pass').value = '';
+  $('#u_pass').placeholder = 'Deixe em branco para manter';
+  $('#u_passLabel').innerHTML = 'Nova senha';
+  $('#uFormTitle').textContent = 'Editar usuário';
+  $('#u_name').focus();
+  $('#u_name').scrollIntoView({block:'center',behavior:'smooth'});
+}
+async function userRemove(id){
+  const u = BadareAuth.list().find(x=>x.id===id); if(!u) return;
+  if(!confirm(`Excluir o usuário "${u.name}" (${u.email})? Esta ação não pode ser desfeita.`)) return;
+  try{ BadareAuth.remove(id); toast('Usuário excluído'); buildNav(); VIEW.usuarios(); }
+  catch(ex){ toast(ex.message); }
+}
+async function submitUser(e){
+  e.preventDefault();
+  const name=$('#u_name').value.trim(), email=$('#u_email').value.trim(), pass=$('#u_pass').value, role=$('#u_role').value;
+  const id=$('#u_id').value;
+  $$('#formUser .field').forEach(f=>f.classList.remove('invalid'));
+  let ok=true;
+  if(!name){ $('#formUser [data-f="name"]').classList.add('invalid'); ok=false; }
+  if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ $('#formUser [data-f="email"]').classList.add('invalid'); ok=false; }
+  if(!id && pass.length<6){ $('#formUser [data-f="password"]').classList.add('invalid'); ok=false; }
+  if(!ok){ toast('Revise os campos destacados'); return; }
+  try{
+    if(id){ await BadareAuth.update(id,{name,email,role,password:pass||undefined}); toast('Usuário atualizado'); }
+    else { await BadareAuth.create({name,email,password:pass,role}); toast('Usuário criado'); }
+    editingUserId=null; buildNav(); VIEW.usuarios();
+  }catch(ex){ toast(ex.message); }
+}
+window.userEdit=userEdit; window.userRemove=userRemove; window.submitUser=submitUser;
+
 /* ---------- NOVO ATENDIMENTO (tela de inserção) ---------- */
 const MESES=['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 const distinct=(key)=>[...new Set(ATEND.map(a=>a[key]).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
@@ -974,6 +1098,11 @@ function fieldSelect(id,label,opts,{req,val=''}={}){
   return `<div class="field" data-f="${id}"><label for="f_${id}">${label}${req?'<span class="req">*</span>':''}</label>
     <select id="f_${id}">${opts.map(o=>`<option value="${esc(o)}" ${o===val?'selected':''}>${o===''?'—':esc(o)}</option>`).join('')}</select>
     <span class="err">Selecione uma opção</span></div>`;
+}
+const FOLLOWUP_OPTS=['48h','72h','7 dias','Recompra'];
+function fieldFollowup(){
+  return `<div class="field full" data-f="followup"><label>Follow-up realizado</label>
+    <div class="check-row">${FOLLOWUP_OPTS.map(o=>`<label class="check"><input type="checkbox" name="followup" value="${o}"><span>${o}</span></label>`).join('')}</div></div>`;
 }
 VIEW.novo = ()=>{
   const today=new Date().toISOString().slice(0,10);
@@ -1003,9 +1132,11 @@ VIEW.novo = ()=>{
           ${fieldSelect('compra','Houve compra?',['Sim','Não'],{val:'Sim'})}
           ${fieldSelect('pagamento','Pagamento',['','PIX','Crédito','Débito','Dinheiro'],{})}
           ${fieldText('taxaCliente','Taxa do cliente (R$)',{type:'number',ph:'0'})}
+          ${fieldText('taxaBadare','Taxa da Badare (R$)',{type:'number',ph:'0'})}
           ${fieldText('entrega','Entrega',{list:'entrega',ph:'Ex.: Matheus / Não'})}
           ${fieldText('retornar','Retornar em',{type:'date'})}
           ${fieldSelect('conversao','Status da conversão',['','Convertido','Em negociação','Não convertido'],{})}
+          ${fieldFollowup()}
           ${`<div class="field full" data-f="obs"><label for="f_obs">Observação</label><textarea id="f_obs" placeholder="Detalhes, motivo de não conversão, preferências..."></textarea></div>`}
           <div class="field full form-actions">
             <button type="button" class="btn ghost" onclick="location.hash='#atendimentos'">Cancelar</button>
@@ -1048,6 +1179,7 @@ async function submitAtendimento(e){
     produto:g('produto'),
     localidade:g('localidade'),
     taxaCliente:parseFloat(g('taxaCliente'))||0,
+    taxaBadare:parseFloat(g('taxaBadare'))||0,
     canal:g('canal'),
     atendente:g('atendente'),
     compra:g('compra')==='Sim',
@@ -1055,7 +1187,7 @@ async function submitAtendimento(e){
     entrega:g('entrega'),
     retornar:g('retornar')||null,
     retornarTxt:g('retornar')?null:'Sem retorno',
-    followup:[],
+    followup:$$('#formNovo input[name="followup"]:checked').map(c=>c.value),
     conversao:g('conversao'),
     obs:g('obs')
   };
@@ -1108,8 +1240,27 @@ $('#globalSearch').addEventListener('input',e=>{
 $('#refDate').value=store.refDate;
 $('#refDate').addEventListener('change',e=>{ store.refDate=e.target.value; persist(); buildNav(); updateNotif(); toast('Data de referência: '+fmtDateFull(e.target.value)); render(); });
 
-/* init — carrega os dados (local ou Supabase) e então renderiza */
+/* ---------- TEMA claro/escuro ---------- */
+const SUN='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
+const MOON='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>';
+function currentTheme(){ return document.documentElement.getAttribute('data-theme')||'dark'; }
+function syncThemeBtn(){ const b=$('#themeBtn'); if(b) b.innerHTML = currentTheme()==='dark'?SUN:MOON; }
+function applyTheme(t){
+  document.documentElement.setAttribute('data-theme',t);
+  try{ localStorage.setItem('badare_theme',t); }catch(e){}
+  const meta=document.querySelector('meta[name="theme-color"]'); if(meta) meta.setAttribute('content', t==='dark'?'#0a0e13':'#eef1f5');
+  syncThemeBtn();
+}
+$('#themeBtn').addEventListener('click',()=>{
+  applyTheme(currentTheme()==='dark'?'light':'dark');
+  if(BadareAuth.currentUser()) render(); // recria gráficos com as cores do tema
+});
+syncThemeBtn();
+
+/* init — gate de login, carrega dados (local ou Supabase) e renderiza */
 async function boot(){
+  await BadareAuth.ensureSeed();
+  if(!BadareAuth.currentUser()){ BadareAuth.showLogin(()=>boot()); return; }
   $('#view').innerHTML='<div class="empty" style="padding:80px"><div>Carregando dados…</div></div>';
   try{
     const data = await BadareDB.load();
