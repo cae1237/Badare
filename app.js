@@ -966,14 +966,21 @@ VIEW.config = ()=>{
       </div>
     </div>
     <div class="grid">
-      <div class="panel col-6"><div class="panel-head"><div><h3>Base de Dados</h3><p>Modo: ${window.BadareDB&&BadareDB.mode==='supabase'?'Nuvem (Supabase)':'Local (navegador)'}</p></div></div>
+      <div class="panel col-6"><div class="panel-head"><div><h3>Base de Dados</h3><p>Origem dos dados e conexão</p></div>
+        ${window.BadareDB&&BadareDB.mode==='supabase'?'<span class="pill ok"><span class="pdot"></span>Nuvem (Supabase)</span>':'<span class="pill mid"><span class="pdot"></span>Local (navegador)</span>'}</div>
         <div class="stat-strip" style="grid-template-columns:repeat(2,1fr)">
           <div class="mini-stat"><b>${fmtN(ATEND.length)}</b><small>Atendimentos</small></div>
           <div class="mini-stat"><b>${fmtN(ENTREGAS.length)}</b><small>Entregas</small></div>
           <div class="mini-stat"><b>${fmtN(clientAgg().length)}</b><small>Clientes únicos</small></div>
           <div class="mini-stat"><b>${fmtN(window.BadareDB?BadareDB.localCount():0)}</b><small>Adicionados localmente</small></div>
         </div>
-        <p style="font-size:12.5px;color:var(--text-dim);margin-top:14px">${window.BadareDB&&BadareDB.mode==='supabase'?'Conectado ao Supabase — dados compartilhados com o time em tempo real.':'Seed inicial gerado da planilha em '+(DBMETA.gerado?fmtDateFull(DBMETA.gerado):'—')+'. Configure o Supabase em <code>config.js</code> para ativar o modo nuvem.'}</p>
+        ${window.BadareDB&&BadareDB.mode==='supabase'
+          ? '<p style="font-size:12.5px;color:var(--text-dim);margin-top:14px">Conectado ao Supabase — dados compartilhados com o time em tempo real. Clique abaixo para confirmar leitura e gravação.</p>'
+          : `<p style="font-size:12.5px;color:var(--warn);margin-top:14px"><b>Por que está local:</b> ${esc((window.BadareDB&&BadareDB.reason)||'Supabase não configurado.')}<br><span style="color:var(--text-dim)">Preencha a URL e a chave anon em <code>config.js</code>, salve e recarregue a página.</span></p>`}
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px">
+          <button class="btn" id="btnTestSupa" onclick="testSupabase()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4 12 14.01l-3-3"/></svg>Testar conexão Supabase</button>
+        </div>
+        <div id="supaTestOut" style="font-size:12.5px;margin-top:12px;line-height:1.6"></div>
       </div>
       <div class="panel col-6"><div class="panel-head"><div><h3>Ações</h3><p>Gerenciamento dos dados</p></div></div>
         <p style="font-size:13.5px;color:var(--text-muted);line-height:1.6;margin-bottom:14px">Contatos marcados, estágios do Kanban e a data de referência ficam salvos neste navegador.</p>
@@ -987,6 +994,25 @@ VIEW.config = ()=>{
    </div>`;
   $('#cfgDate').addEventListener('change',e=>{ store.refDate=e.target.value; persist(); $('#refDate').value=e.target.value; buildNav(); updateNotif(); toast('Data de referência atualizada'); VIEW.config(); });
 };
+async function testSupabase(){
+  const out=$('#supaTestOut'), btn=$('#btnTestSupa');
+  if(!out) return;
+  out.innerHTML='<span style="color:var(--text-muted)">Testando conexão…</span>';
+  if(btn){ btn.disabled=true; btn.style.opacity='.6'; }
+  const r=await BadareDB.test();
+  if(btn){ btn.disabled=false; btn.style.opacity='1'; }
+  if(r.ok){
+    out.innerHTML=`<div class="pill ok" style="margin-bottom:8px"><span class="pdot"></span>Conexão OK — gravando no Supabase</div>`+
+      (r.steps||[]).map(s=>`<div style="color:var(--text-muted)">✓ ${esc(s)}</div>`).join('');
+    toast('Supabase conectado e gravando!');
+  }else{
+    out.innerHTML=`<div class="pill neg" style="margin-bottom:8px"><span class="pdot"></span>Falhou</div>`+
+      (r.steps||[]).map(s=>`<div style="color:var(--text-muted)">✓ ${esc(s)}</div>`).join('')+
+      `<div style="color:var(--danger);margin-top:6px"><b>Erro:</b> ${esc(r.error||'desconhecido')}</div>`;
+    toast('Falha no teste do Supabase');
+  }
+}
+window.testSupabase=testSupabase;
 function resetState(){ store.contatados={}; store.stage={}; persist(); toast('Marcações resetadas'); buildNav(); updateNotif(); render(); }
 window.resetState=resetState;
 async function clearLocalRecords(){
