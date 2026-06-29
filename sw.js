@@ -2,7 +2,7 @@
    Estratégia: network-first para o app (sempre pega a versão mais nova
    quando online; usa cache só offline). Dados do Supabase nunca são
    cacheados (sempre rede). */
-const CACHE = 'badare-v5';
+const CACHE = 'badare-v6';
 const SHELL = ['./','index.html','app.js','auth.js','db.js','config.js','data.js','manifest.json','icon.svg','icon-192.png','icon-512.png','icon-512-maskable.png','apple-touch-icon.png','assets/logo-icon.svg','assets/logo-horizontal.svg'];
 
 self.addEventListener('install', e => {

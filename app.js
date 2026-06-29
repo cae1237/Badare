@@ -114,11 +114,13 @@ const ROUTES = [
   {id:'produtos', label:'Produtos', sub:'Ranking e categorias', icon:'M20 7h-9M14 17H5'},
   {id:'relatorios', label:'Relatórios', sub:'Análises detalhadas', icon:'M12 20V10M18 20V4M6 20v-4'},
   {grp:'Administração', admin:true},
+  {id:'meta', label:'Meta', sub:'Cadastro do principal indicador', icon:'TG', admin:true},
   {id:'usuarios', label:'Usuários', sub:'Gestão de acessos e perfis', icon:'U', admin:true},
   {id:'config', label:'Configurações', sub:'Parâmetros e regras', icon:'G'},
 ];
 const ICONS = {
   U:'<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  TG:'<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.2"/>',
   C:'<circle cx="9" cy="7" r="4"/><path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
   B:'<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
   T:'<rect x="1" y="3" width="15" height="13" rx="1"/><path d="M16 8h4l3 3v5h-7z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/>',
@@ -313,7 +315,7 @@ const donutOpts=cut=>({responsive:true,maintainAspectRatio:false,cutout:cut+'%',
 
 function lineMonths(canvas, dsA, dsB){
   const ctx=canvas.getContext('2d'); const c=C();
-  return reg(new Chart(ctx,{type:'line',data:{labels:['Jan','Fev','Mar','Abr'],datasets:[
+  return reg(new Chart(ctx,{type:'line',data:{labels:ORD.map(abbr),datasets:[
     {label:'Atendimentos',data:dsA,borderColor:c.acc,backgroundColor:gradV(ctx,'rgba(46,230,166,.28)','rgba(46,230,166,0)'),fill:true,tension:.4,borderWidth:2.5,pointRadius:3,pointHoverRadius:6,pointBackgroundColor:c.acc,pointBorderColor:'#0a0e13',pointBorderWidth:2,datalabels:{...dlLine(),align:'top'}},
     {label:'Compras',data:dsB,borderColor:c.acc2,backgroundColor:gradV(ctx,'rgba(56,189,248,.18)','rgba(56,189,248,0)'),fill:true,tension:.4,borderWidth:2.5,pointRadius:3,pointHoverRadius:6,pointBackgroundColor:c.acc2,pointBorderColor:'#0a0e13',pointBorderWidth:2,datalabels:{...dlLine(),align:'bottom'}}
   ]},options:{responsive:true,maintainAspectRatio:false,layout:{padding:{top:18}},animation:{duration:1200,easing:'easeOutQuart'},interaction:{mode:'index',intersect:false},plugins:{legend:legendCfg(true),tooltip:tt()},scales:{x:{grid:{display:false},border:{display:false}},y:{...baseGrid(),beginAtZero:true,grace:'12%'}}}}));
@@ -331,10 +333,15 @@ function hbar(canvas,labels,data,grad,seriesLabel){
 /* ============================================================
    MÉTRICAS AGREGADAS
    ============================================================ */
-const ORD=['Janeiro','Fevereiro','Março','Abril'];
+const MES_ORDER=['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+const MES_ABBR={Janeiro:'Jan',Fevereiro:'Fev','Março':'Mar',Abril:'Abr',Maio:'Mai',Junho:'Jun',Julho:'Jul',Agosto:'Ago',Setembro:'Set',Outubro:'Out',Novembro:'Nov',Dezembro:'Dez'};
+const abbr=m=>MES_ABBR[m]||m;
+let ORD=['Janeiro','Fevereiro','Março','Abril'];
 function monthSeries(field){ return ORD.map(m=>ATEND.filter(a=>a.mes===m && (field?field(a):true)).length); }
 let M = {};
 function recompute(){
+  ORD = MES_ORDER.filter(m=>ATEND.some(a=>a.mes===m));
+  if(!ORD.length) ORD=['Janeiro','Fevereiro','Março','Abril'];
   M = {
     total: ATEND.length,
     compras: ATEND.filter(a=>a.compra).length,
@@ -349,6 +356,89 @@ function recompute(){
     compraMes: monthSeries(a=>a.compra),
   };
   M.convRate = M.total ? ((M.compras/M.total)*100) : 0;
+}
+
+/* ============================================================
+   METAS — principal indicador do projeto (persistido no Supabase)
+   METAS = { 'YYYY-MM': { indicador, alvo } }
+   ============================================================ */
+let METAS = {};
+const INDICADORES = {
+  compras:      {label:'Compras (vendas)',       unit:'vendas',       money:false, val:r=>r.filter(a=>a.compra).length},
+  faturamento:  {label:'Faturamento (taxas)',    unit:'',             money:true,  val:r=>r.reduce((s,a)=>s+(+a.taxaCliente||0),0)},
+  novos:        {label:'Novos clientes',         unit:'novos',        money:false, val:r=>r.filter(a=>a.status==='Novo').length},
+  atendimentos: {label:'Atendimentos',           unit:'atendimentos', money:false, val:r=>r.length},
+};
+function currentYm(){ return (store.refDate||'2026-01-01').slice(0,7); }
+function ymLabel(ym){ const [y,m]=ym.split('-').map(Number); return (MES_ORDER[m-1]||ym)+'/'+y; }
+function metaVal(money,v){ return money?fmtBR(v):fmtN(Math.round(v)); }
+async function loadMetas(){
+  try{ METAS = (await BadareDB.kvGet('metas', {})) || {}; }
+  catch(err){ console.error('Falha ao carregar metas:', err); METAS={}; }
+}
+async function saveMeta(ym, indicador, alvo){
+  METAS[ym] = { indicador, alvo:+alvo||0 };
+  await BadareDB.kvSet('metas', METAS);
+}
+async function removeMeta(ym){ delete METAS[ym]; await BadareDB.kvSet('metas', METAS); }
+
+function metaSnapshot(ym){
+  const meta = METAS[ym]; if(!meta) return null;
+  const ind = INDICADORES[meta.indicador] || INDICADORES.compras;
+  const [y,mo] = ym.split('-').map(Number);
+  const recs = ATEND.filter(a=>(a.data||'').slice(0,7)===ym);
+  const realizado = ind.val(recs);
+  const alvo = +meta.alvo||0;
+  const diasNoMes = new Date(y, mo, 0).getDate();
+  const refYm = (store.refDate||'2026-01-01').slice(0,7);
+  let diaAtual;
+  if(refYm===ym) diaAtual = +(store.refDate.slice(8,10));
+  else if(ym < refYm) diaAtual = diasNoMes;   // mês encerrado
+  else diaAtual = 0;                           // mês ainda não começou
+  const diasRestantes = Math.max(0, diasNoMes - diaAtual);
+  const previsao = diaAtual>0 ? Math.round(realizado/diaAtual*diasNoMes) : (ym<refYm?realizado:0);
+  const falta = Math.max(0, alvo - realizado);
+  const pct = alvo>0 ? realizado/alvo*100 : 0;
+  const pctPrev = alvo>0 ? previsao/alvo*100 : 0;
+  const ritmoAtual = diaAtual>0 ? realizado/diaAtual : 0;
+  const ritmoNec = diasRestantes>0 ? falta/diasRestantes : falta;
+  return {ym, meta, ind, label:ymLabel(ym), realizado, alvo, diasNoMes, diaAtual, diasRestantes,
+          previsao, falta, pct, pctPrev, ritmoAtual, ritmoNec, onTrack: previsao>=alvo && alvo>0};
+}
+
+/* clientes de maior potencial para ajudar a bater a meta */
+function metaPotenciais(ym, limit=6){
+  const boughtThis = new Set(ATEND.filter(a=>(a.data||'').slice(0,7)===ym && a.compra).map(a=>a.cliente));
+  return clientAgg().filter(c=>!boughtThis.has(c.nome)).map(c=>{
+    const recs = ATEND.filter(a=>a.cliente===c.nome);
+    const negoc = recs.some(a=>a.conversao==='Em negociação');
+    const retMes = recs.some(a=>a.retornar && a.retornar.slice(0,7)===ym);
+    let score = c.compras*2 + c.atend; const motivo=[];
+    if(negoc){ score+=10; motivo.push('em negociação'); }
+    if(retMes){ score+=7; motivo.push('retorno no mês'); }
+    if(c.status==='Recorrente'){ score+=3; motivo.push('recorrente'); }
+    return {...c, score, motivo};
+  }).filter(c=>c.compras>0 || c.motivo.length)
+    .sort((a,b)=>b.score-a.score).slice(0,limit);
+}
+
+function metaAcoes(s){
+  const f = v=>metaVal(s.ind.money,v);
+  const fr = v=>s.ind.money?fmtBR(v):(Math.round(v*10)/10).toString().replace('.',',');
+  const a=[];
+  if(s.alvo<=0) return ['Defina o valor da meta para gerar as recomendações.'];
+  if(s.diaAtual===0) return ['O mês selecionado ainda não começou (pela data de referência).'];
+  if(s.onTrack) a.push(`No ritmo atual a previsão (${f(s.previsao)}) bate a meta. Mantenha ~${fr(s.ritmoAtual)}/dia.`);
+  else{
+    a.push(`Faltam ${f(s.falta)} para a meta — previsão atual ${f(s.previsao)} (${Math.round(s.pctPrev)}%).`);
+    if(s.diasRestantes>0) a.push(`Acelere para ~${fr(s.ritmoNec)}/dia nos ${s.diasRestantes} dias restantes (hoje ~${fr(s.ritmoAtual)}/dia).`);
+  }
+  const negoc = ATEND.filter(a=>a.conversao==='Em negociação').length;
+  const ret = activeReturns().length;
+  if(negoc) a.push(`Priorize as ${negoc} oportunidades <b>em negociação</b> (mais perto de fechar).`);
+  if(ret) a.push(`Acione os ${ret} <b>retornos/follow-ups</b> pendentes na Central de Retornos.`);
+  a.push('Concentre o esforço nos <b>clientes de maior potencial</b> ao lado.');
+  return a;
 }
 
 /* ---------- INTELIGÊNCIA DE DECISÃO ---------- */
@@ -408,6 +498,49 @@ function buildInsights(){
    ============================================================ */
 const VIEW = {};
 
+/* ---------- WIDGET DE META (Dashboard) ---------- */
+function metaWidgetHTML(){
+  const ym=currentYm(); const s=metaSnapshot(ym);
+  const admin=window.BadareAuth&&BadareAuth.isAdmin();
+  if(!s){
+    return `<section class="grid"><div class="panel col-12">
+      <div class="panel-head"><div><h3>🎯 Meta do Mês</h3><p>Principal indicador do projeto · ${esc(ymLabel(ym))}</p></div>${admin?'<a href="#meta" class="btn sm primary">Cadastrar meta</a>':''}</div>
+      <div class="empty" style="padding:34px">Nenhuma meta definida para <b>${esc(ymLabel(ym))}</b>.${admin?'':' Peça a um administrador para cadastrar.'}</div>
+    </div></section>`;
+  }
+  const f=v=>metaVal(s.ind.money,v);
+  const fr=v=>s.ind.money?fmtBR(v):(Math.round(v*10)/10).toString().replace('.',',');
+  const pctClamp=Math.max(0,Math.min(100,Math.round(s.pct)));
+  const statusPill = s.diaAtual===0?'<span class="pill gray">Não iniciado</span>':(s.onTrack?'<span class="pill ok"><span class="pdot"></span>No ritmo</span>':'<span class="pill neg"><span class="pdot"></span>Abaixo do ritmo</span>');
+  const pot=metaPotenciais(ym);
+  return `<section class="grid">
+    <div class="panel col-8" style="animation-delay:.02s">
+      <div class="panel-head"><div><h3>🎯 Meta do Mês · ${esc(s.ind.label)}</h3><p>${esc(s.label)} · principal indicador</p></div><div style="display:flex;gap:8px;align-items:center">${statusPill}${admin?'<a href="#meta" class="btn sm">Editar</a>':''}</div></div>
+      <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+        <b style="font-family:'Space Grotesk';font-size:34px;font-weight:600;line-height:1">${f(s.realizado)}</b>
+        <span style="color:var(--text-muted)">de ${f(s.alvo)} · <b style="color:${s.pct>=100?'var(--accent)':'var(--text)'}">${Math.round(s.pct)}%</b> atingido</span>
+      </div>
+      <div class="track" style="height:12px"><div class="fill" style="background:var(--grad);width:0" data-w="${pctClamp}"></div></div>
+      <div class="stat-strip" style="grid-template-columns:repeat(4,1fr);margin-top:16px">
+        <div class="mini-stat"><b>${f(s.previsao)}</b><small>Previsão do mês (${Math.round(s.pctPrev)}%)</small></div>
+        <div class="mini-stat" style="border-left:3px solid ${s.falta>0?'var(--warn)':'var(--accent)'}"><b>${f(s.falta)}</b><small>Falta p/ a meta</small></div>
+        <div class="mini-stat"><b>${s.diasRestantes}</b><small>Dias restantes</small></div>
+        <div class="mini-stat"><b>${fr(s.ritmoNec)}<span style="font-size:12px;color:var(--text-muted)">/dia</span></b><small>Ritmo necessário</small></div>
+      </div>
+      <div style="margin-top:18px"><div style="font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.06em;margin-bottom:9px">Ações para atingir a meta</div>
+        <div class="help-list">${metaAcoes(s).map(t=>`<div class="hi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12l5 5L20 7"/></svg><div>${t}</div></div>`).join('')}</div>
+      </div>
+    </div>
+    <div class="panel col-4" style="animation-delay:.06s">
+      <div class="panel-head"><div><h3>Maior Potencial</h3><p>Clientes p/ puxar a meta</p></div></div>
+      <div class="ranklist">${pot.length?pot.map((c,i)=>`<div class="rankrow" style="cursor:pointer" onclick="clientHistoryDrawer('${esc(c.nome).replace(/'/g,"\\'")}')">
+        <span class="rnum">${i+1}</span><span class="rav" style="background:${avatarColor(c.nome)}">${initials(c.nome)}</span>
+        <div class="rbody"><h5>${esc(c.nome)}</h5><small>${c.compras} compras${c.motivo.length?' · '+esc(c.motivo.join(' · ')):''}</small></div></div>`).join('')
+        :'<div class="empty" style="padding:24px;font-size:13px">Sem candidatos no momento</div>'}</div>
+    </div>
+  </section>`;
+}
+
 /* ---------- DASHBOARD ---------- */
 VIEW.dashboard = ()=>{
   const cat = countBy(ATEND,'categoria');
@@ -423,6 +556,8 @@ VIEW.dashboard = ()=>{
       ${kpi({cls:'ico-c',path:'M16 3h5v5M21 3l-7 7'},M.convRate.toFixed(1).replace('.',',')+'%','Taxa de conversão',{dir:'up',val:'+2,6pp'})}
       ${kpi({cls:'ico-d',path:'T'},fmtBR(M.receita),'Receita de taxas · '+M.entregas+' entregas',{dir:'down',val:'-3,4%'})}
     </section>
+
+    ${metaWidgetHTML()}
 
     <section class="grid">
       <div class="panel col-8" style="animation-delay:.05s">
@@ -891,7 +1026,7 @@ VIEW.entregas = ()=>{
     </div></div>
    </div>`;
   const ctx=$('#enCombo').getContext('2d');
-  reg(new Chart(ctx,{data:{labels:['Jan','Fev','Mar','Abr'],datasets:[
+  reg(new Chart(ctx,{data:{labels:ORD.map(abbr),datasets:[
     {type:'bar',label:'Entregas',data:byMonth,backgroundColor:gradV(ctx,'rgba(167,139,250,.9)','rgba(167,139,250,.35)'),borderRadius:8,borderSkipped:false,barThickness:38,yAxisID:'y',datalabels:{display:true,anchor:'end',align:'top',color:css('--text'),font:{family:"'Space Grotesk'",size:11,weight:'600'},formatter:v=>v}},
     {type:'line',label:'Taxas (R$)',data:valMonth,borderColor:C().acc,backgroundColor:C().acc,tension:.4,borderWidth:2.5,pointRadius:4,pointBackgroundColor:C().acc,pointBorderColor:'#0a0e13',pointBorderWidth:2,yAxisID:'y1',datalabels:{display:true,align:'top',offset:6,color:C().acc,backgroundColor:'rgba(10,14,19,.7)',borderRadius:4,padding:{top:2,bottom:2,left:5,right:5},font:{family:"'Space Grotesk'",size:10.5,weight:'600'},formatter:v=>'R$'+fmtN(v)}}
   ]},options:{responsive:true,maintainAspectRatio:false,layout:{padding:{top:18}},animation:{duration:1200,easing:'easeOutQuart'},interaction:{mode:'index',intersect:false},plugins:{legend:legendCfg(true),tooltip:tt(true)},scales:{x:{grid:{display:false},border:{display:false}},y:{...baseGrid(),beginAtZero:true,grace:'15%'},y1:{position:'right',beginAtZero:true,grid:{display:false},border:{display:false},grace:'15%',ticks:{callback:v=>'R$'+v}}}}}));
@@ -947,10 +1082,13 @@ VIEW.relatorios = ()=>{
   // stacked
   const novos=ORD.map(m=>ATEND.filter(a=>a.mes===m&&a.status==='Novo').length);
   const rec=ORD.map(m=>ATEND.filter(a=>a.mes===m&&a.status==='Recorrente').length);
-  reg(new Chart($('#rStack'),{type:'bar',data:{labels:['Jan','Fev','Mar','Abr'],datasets:[
-    {label:'Novos',data:novos,backgroundColor:C().acc2,borderRadius:6,borderSkipped:false,stack:'s',datalabels:dlStack()},
-    {label:'Recorrentes',data:rec,backgroundColor:C().acc3,borderRadius:6,borderSkipped:false,stack:'s',datalabels:dlStack()}
-  ]},options:{responsive:true,maintainAspectRatio:false,animation:{duration:1100},plugins:{legend:legendCfg(true),tooltip:tt()},scales:{x:{stacked:true,grid:{display:false},border:{display:false}},y:{stacked:true,...baseGrid(),beginAtZero:true}}}}));
+  const totMes=ORD.map((m,i)=>novos[i]+rec[i]);
+  const dlStackPct=()=>({display:c=>c.dataset.data[c.dataIndex]>0,color:'#06121a',font:{family:"'Space Grotesk'",size:10.5,weight:'700'},textAlign:'center',
+    formatter:(v,c)=>{const t=totMes[c.dataIndex]||1;return [String(v),Math.round(v/t*100)+'%'];}});
+  reg(new Chart($('#rStack'),{type:'bar',data:{labels:ORD.map(abbr),datasets:[
+    {label:'Novos',data:novos,backgroundColor:C().acc2,borderRadius:6,borderSkipped:false,stack:'s',datalabels:dlStackPct()},
+    {label:'Recorrentes',data:rec,backgroundColor:C().acc3,borderRadius:6,borderSkipped:false,stack:'s',datalabels:dlStackPct()}
+  ]},options:{responsive:true,maintainAspectRatio:false,animation:{duration:1100},plugins:{legend:legendCfg(true),tooltip:{...tt(),callbacks:{label:c=>{const t=totMes[c.dataIndex]||1;return ' '+c.dataset.label+': '+c.parsed.y+' ('+Math.round(c.parsed.y/t*100)+'%)';}}}},scales:{x:{stacked:true,grid:{display:false},border:{display:false}},y:{stacked:true,...baseGrid(),beginAtZero:true}}}}));
   hbar($('#rPresc'),presc.map(p=>p[0]),presc.map(p=>p[1]));
 };
 function exportCSV(){
@@ -1121,6 +1259,82 @@ async function submitUser(e){
   }catch(ex){ toast(ex.message); }
 }
 window.userEdit=userEdit; window.userRemove=userRemove; window.submitUser=submitUser;
+
+/* ============================================================
+   META (admin) — cadastro do principal indicador do projeto
+   ============================================================ */
+VIEW.meta = ()=>{
+  if(!BadareAuth.isAdmin()){ location.hash='#dashboard'; return; }
+  const ym = currentYm();
+  const indOpts = Object.entries(INDICADORES).map(([k,v])=>`<option value="${k}">${v.label}</option>`).join('');
+  const metasList = Object.keys(METAS).sort().reverse();
+  $('#view').innerHTML = `<div class="view">
+    <div class="mode-banner cloud">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/><circle cx="12" cy="12" r="4"/></svg>
+      <span><b style="font-weight:600">Meta do projeto.</b>&nbsp;Defina o alvo do mês para o indicador principal. Ele aparece no Dashboard com previsão, o que falta e as ações para atingir.</span>
+    </div>
+    <div class="grid">
+      <div class="panel col-5">
+        <div class="panel-head"><div><h3 id="metaFormTitle">Definir meta do mês</h3><p>Salvo no Supabase, visível para todo o time</p></div></div>
+        <form id="formMeta" class="form-grid" autocomplete="off" novalidate>
+          <div class="field full"><label for="m_mes">Mês de referência</label><input id="m_mes" type="month" value="${ym}"></div>
+          <div class="field full"><label for="m_ind">Indicador principal</label><select id="m_ind">${indOpts}</select></div>
+          <div class="field full"><label for="m_alvo">Meta (alvo a atingir)</label><input id="m_alvo" type="number" min="0" step="any" placeholder="Ex.: 120"></div>
+          <div class="field full form-actions">
+            <button type="submit" class="btn primary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>Salvar meta</button>
+          </div>
+        </form>
+        <div id="metaPreview" style="margin-top:6px"></div>
+      </div>
+      <div class="panel col-7">
+        <div class="panel-head"><div><h3>Metas cadastradas</h3><p>${metasList.length} mês(es) com meta definida</p></div></div>
+        ${metasList.length? `<div class="tbl-wrap"><table>
+          <thead><tr><th>Mês</th><th>Indicador</th><th>Meta</th><th>Realizado</th><th>%</th><th style="text-align:right">Ações</th></tr></thead>
+          <tbody>${metasList.map(k=>{const s=metaSnapshot(k);const f=v=>metaVal(s.ind.money,v);return `<tr>
+            <td class="cell-strong">${esc(ymLabel(k))}</td><td class="muted">${esc(s.ind.label)}</td>
+            <td>${f(s.alvo)}</td><td>${f(s.realizado)}</td>
+            <td>${s.pct>=100?'<span class="pill ok">'+Math.round(s.pct)+'%</span>':'<span class="pill '+(s.onTrack?'info':'mid')+'">'+Math.round(s.pct)+'%</span>'}</td>
+            <td><div class="u-actions" style="justify-content:flex-end">
+              <button class="iconbtn" title="Editar" onclick="metaEdit('${k}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg></button>
+              <button class="iconbtn" title="Excluir" onclick="metaDelete('${k}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></button>
+            </div></td></tr>`;}).join('')}</tbody></table></div>`
+          : '<div class="empty" style="padding:34px">Nenhuma meta cadastrada ainda.</div>'}
+      </div>
+    </div>
+  </div>`;
+  // pré-preenche se já existir meta para o mês atual
+  if(METAS[ym]){ $('#m_ind').value=METAS[ym].indicador; $('#m_alvo').value=METAS[ym].alvo; }
+  const upd=()=>metaPreview();
+  $('#m_mes').addEventListener('change',()=>{ const k=$('#m_mes').value; if(METAS[k]){$('#m_ind').value=METAS[k].indicador;$('#m_alvo').value=METAS[k].alvo;} upd(); });
+  $('#m_ind').addEventListener('change',upd); $('#m_alvo').addEventListener('input',upd);
+  $('#formMeta').addEventListener('submit',submitMeta);
+  metaPreview();
+};
+function metaPreview(){
+  const box=$('#metaPreview'); if(!box) return;
+  const ym=$('#m_mes').value, ind=$('#m_ind').value, alvo=+$('#m_alvo').value||0;
+  if(!ym || !alvo){ box.innerHTML=''; return; }
+  const saved=METAS[ym]; METAS[ym]={indicador:ind,alvo};       // simulação temporária
+  const s=metaSnapshot(ym); if(saved) METAS[ym]=saved; else delete METAS[ym];
+  const f=v=>metaVal(s.ind.money,v);
+  box.innerHTML=`<div class="insight ${s.onTrack?'':'warn'}" style="border-left-color:${s.onTrack?'var(--accent)':'var(--warn)'}">
+    <div class="ih">Prévia · ${esc(ymLabel(ym))}</div>
+    <p style="margin-top:2px">Realizado <b>${f(s.realizado)}</b> de ${f(s.alvo)} (${Math.round(s.pct)}%). Previsão do mês: <b>${f(s.previsao)}</b> · falta <b>${f(s.falta)}</b>.</p></div>`;
+}
+async function submitMeta(e){
+  e.preventDefault();
+  const ym=$('#m_mes').value, ind=$('#m_ind').value, alvo=+$('#m_alvo').value;
+  if(!ym){ toast('Escolha o mês'); return; }
+  if(!(alvo>0)){ toast('Informe um alvo maior que zero'); return; }
+  try{ await saveMeta(ym,ind,alvo); toast('Meta salva!'); VIEW.meta(); }
+  catch(ex){ toast('Erro ao salvar meta: '+(ex.message||ex)); }
+}
+function metaEdit(ym){ $('#m_mes').value=ym; $('#m_ind').value=METAS[ym].indicador; $('#m_alvo').value=METAS[ym].alvo; metaPreview(); $('#m_alvo').scrollIntoView({block:'center'}); }
+async function metaDelete(ym){
+  if(!confirm('Excluir a meta de '+ymLabel(ym)+'?')) return;
+  try{ await removeMeta(ym); toast('Meta excluída'); VIEW.meta(); }catch(ex){ toast(ex.message); }
+}
+window.submitMeta=submitMeta; window.metaEdit=metaEdit; window.metaDelete=metaDelete;
 
 /* ---------- NOVO ATENDIMENTO (tela de inserção) ---------- */
 const MESES=['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
@@ -1309,10 +1523,11 @@ async function boot(){
   if(!BadareAuth.currentUser()){ BadareAuth.showLogin(()=>boot()); return; }
   $('#view').innerHTML='<div class="empty" style="padding:80px"><div>Carregando dados…</div></div>';
   try{
-    await loadState();
     const data = await BadareDB.load();
     ATEND = data.atendimentos || [];
     ENTREGAS = data.entregas || [];
+    await loadState();   // depois dos dados: maxDate() usa a última data real
+    await loadMetas();
   }catch(err){
     console.error('Falha ao carregar do Supabase:',err);
     $('#view').innerHTML=`<div class="empty" style="padding:60px"><div style="color:var(--danger);font-weight:600;margin-bottom:8px">Erro ao carregar do Supabase</div><div style="color:var(--text-muted);font-size:13px">${esc(err.message||err)}</div><button class="btn" style="margin-top:16px" onclick="location.reload()">Tentar de novo</button></div>`;
