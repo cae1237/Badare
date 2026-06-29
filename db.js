@@ -1,12 +1,11 @@
 /* ============================================================
    Badare CRM — Camada de Dados (Data Access Layer)
    ------------------------------------------------------------
-   Abstrai a origem dos dados. Dois modos automáticos:
-   • "supabase" — se config.js tiver URL + chave válidas
-   • "local"    — caso contrário (localStorage, semeado com data.js)
-
-   A interface é a mesma nos dois modos, então a tela de inserção
-   não muda quando você plugar o Supabase.
+   App 100% NUVEM: todos os dados são lidos/gravados no Supabase.
+   Sem Supabase configurado o app não abre (nada é salvo local).
+   • atendimentos / entregas  → tabelas
+   • estado compartilhado     → app_kv (kvGet/kvSet): metas, marcações
+   • usuários                 → funções RPC (ver auth.js)
    ============================================================ */
 window.BadareDB = (function () {
   const SEED = window.BADARE_DATA || { atendimentos: [], entregas: [] };

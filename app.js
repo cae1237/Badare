@@ -15,29 +15,25 @@ const DBMETA = (window.BADARE_DATA && window.BADARE_DATA.meta) || {};
    na tabela app_kv (chave 'crm_state'). O objeto abaixo é só o cache em
    memória da sessão atual; persist() sincroniza com a nuvem (debounced). */
 const store = { contatados:{}, stage:{}, refDate:null };
+// data de HOJE (real, do dispositivo) no formato YYYY-MM-DD
+function todayISO(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 async function loadState(){
   let s = {};
   try { s = (await BadareDB.kvGet('crm_state', {})) || {}; }
   catch(err){ console.error('Falha ao carregar estado compartilhado:', err); }
   store.contatados = s.contatados || {};
   store.stage = s.stage || {};
-  store.refDate = s.refDate || maxDate();
+  // a data de referência é SEMPRE a data atual (não persiste valor antigo)
+  store.refDate = todayISO();
 }
 let _persistT = null;
 function persist(){
   if(_persistT) clearTimeout(_persistT);
   _persistT = setTimeout(()=>{
-    BadareDB.kvSet('crm_state', { contatados:store.contatados, stage:store.stage, refDate:store.refDate })
+    // só marcações/kanban são compartilhados; a data de referência é sempre "hoje"
+    BadareDB.kvSet('crm_state', { contatados:store.contatados, stage:store.stage })
       .catch(err=>console.error('Falha ao salvar estado:', err));
   }, 400);
-}
-
-function maxDate(){
-  let m = '2026-01-01';
-  ATEND.forEach(a=>{ if(a.data>m) m=a.data; });
-  // referência um pouco à frente do último registro para popular "atrasados/hoje/próximos"
-  const d = new Date(m+'T00:00:00'); d.setDate(d.getDate()-10);
-  return d.toISOString().slice(0,10);
 }
 
 /* ---------- helpers ---------- */
@@ -362,33 +358,56 @@ function recompute(){
    METAS — principal indicador do projeto (persistido no Supabase)
    METAS = { 'YYYY-MM': { indicador, alvo } }
    ============================================================ */
+/* Modelo: METAS = { 'YYYY-MM': { principal:<indicador>, alvos:{ <indicador>:<alvo> } } } */
 let METAS = {};
 const INDICADORES = {
-  compras:      {label:'Compras (vendas)',       unit:'vendas',       money:false, val:r=>r.filter(a=>a.compra).length},
-  faturamento:  {label:'Faturamento (taxas)',    unit:'',             money:true,  val:r=>r.reduce((s,a)=>s+(+a.taxaCliente||0),0)},
-  novos:        {label:'Novos clientes',         unit:'novos',        money:false, val:r=>r.filter(a=>a.status==='Novo').length},
+  faturamento:  {label:'Faturamento (R$)',       unit:'',             money:true,  val:r=>r.reduce((s,a)=>s+(+a.taxaCliente||0),0)},
+  compras:      {label:'Vendas (compras)',       unit:'vendas',       money:false, val:r=>r.filter(a=>a.compra).length},
   atendimentos: {label:'Atendimentos',           unit:'atendimentos', money:false, val:r=>r.length},
+  novos:        {label:'Clientes novos',         unit:'clientes',     money:false, val:r=>r.filter(a=>a.status==='Novo').length},
 };
 function currentYm(){ return (store.refDate||'2026-01-01').slice(0,7); }
 function ymLabel(ym){ const [y,m]=ym.split('-').map(Number); return (MES_ORDER[m-1]||ym)+'/'+y; }
 function metaVal(money,v){ return money?fmtBR(v):fmtN(Math.round(v)); }
+function migrateMetas(){
+  // compat: formato antigo { ym:{indicador,alvo} } -> novo { ym:{principal,alvos} }
+  Object.keys(METAS).forEach(ym=>{
+    const m=METAS[ym];
+    if(m && m.indicador && !m.alvos){ METAS[ym]={principal:m.indicador, alvos:{[m.indicador]:+m.alvo||0}}; }
+    else if(m && !m.alvos){ METAS[ym]={principal:'faturamento', alvos:{}}; }
+  });
+}
 async function loadMetas(){
   try{ METAS = (await BadareDB.kvGet('metas', {})) || {}; }
   catch(err){ console.error('Falha ao carregar metas:', err); METAS={}; }
+  migrateMetas();
 }
-async function saveMeta(ym, indicador, alvo){
-  METAS[ym] = { indicador, alvo:+alvo||0 };
+async function saveMeta(ym, indicador, alvo, makePrincipal){
+  if(!METAS[ym]) METAS[ym]={principal:indicador, alvos:{}};
+  METAS[ym].alvos[indicador]=+alvo||0;
+  if(makePrincipal || !METAS[ym].principal) METAS[ym].principal=indicador;
   await BadareDB.kvSet('metas', METAS);
 }
-async function removeMeta(ym){ delete METAS[ym]; await BadareDB.kvSet('metas', METAS); }
+async function removeMeta(ym, indicador){
+  if(!METAS[ym]) return;
+  if(indicador){
+    delete METAS[ym].alvos[indicador];
+    if(METAS[ym].principal===indicador) METAS[ym].principal=Object.keys(METAS[ym].alvos)[0]||null;
+    if(!Object.keys(METAS[ym].alvos).length) delete METAS[ym];
+  } else { delete METAS[ym]; }
+  await BadareDB.kvSet('metas', METAS);
+}
+function metaIndicadores(ym){ return METAS[ym]&&METAS[ym].alvos ? Object.keys(METAS[ym].alvos) : []; }
 
-function metaSnapshot(ym){
-  const meta = METAS[ym]; if(!meta) return null;
-  const ind = INDICADORES[meta.indicador] || INDICADORES.compras;
+function metaSnapshot(ym, indicador){
+  const m = METAS[ym]; if(!m || !m.alvos) return null;
+  indicador = indicador || m.principal || Object.keys(m.alvos)[0];
+  if(!indicador || !(indicador in m.alvos)) return null;
+  const ind = INDICADORES[indicador] || INDICADORES.compras;
   const [y,mo] = ym.split('-').map(Number);
   const recs = ATEND.filter(a=>(a.data||'').slice(0,7)===ym);
   const realizado = ind.val(recs);
-  const alvo = +meta.alvo||0;
+  const alvo = +m.alvos[indicador]||0;
   const diasNoMes = new Date(y, mo, 0).getDate();
   const refYm = (store.refDate||'2026-01-01').slice(0,7);
   let diaAtual;
@@ -402,7 +421,7 @@ function metaSnapshot(ym){
   const pctPrev = alvo>0 ? previsao/alvo*100 : 0;
   const ritmoAtual = diaAtual>0 ? realizado/diaAtual : 0;
   const ritmoNec = diasRestantes>0 ? falta/diasRestantes : falta;
-  return {ym, meta, ind, label:ymLabel(ym), realizado, alvo, diasNoMes, diaAtual, diasRestantes,
+  return {ym, indicador, isPrincipal: m.principal===indicador, ind, label:ymLabel(ym), realizado, alvo, diasNoMes, diaAtual, diasRestantes,
           previsao, falta, pct, pctPrev, ritmoAtual, ritmoNec, onTrack: previsao>=alvo && alvo>0};
 }
 
@@ -513,6 +532,10 @@ function metaWidgetHTML(){
   const pctClamp=Math.max(0,Math.min(100,Math.round(s.pct)));
   const statusPill = s.diaAtual===0?'<span class="pill gray">Não iniciado</span>':(s.onTrack?'<span class="pill ok"><span class="pdot"></span>No ritmo</span>':'<span class="pill neg"><span class="pdot"></span>Abaixo do ritmo</span>');
   const pot=metaPotenciais(ym);
+  // apuração das demais metas do mês (todas, além da principal)
+  const outras=metaIndicadores(ym).filter(i=>i!==s.indicador).map(i=>metaSnapshot(ym,i)).filter(Boolean);
+  const outrasHTML = outras.length ? `<div style="margin-top:18px"><div style="font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.06em;margin-bottom:9px">Apuração das demais metas</div>
+    <div class="barlist">${outras.map(o=>{const fo=v=>metaVal(o.ind.money,v);const p=Math.max(0,Math.min(100,Math.round(o.pct)));return `<div class="barrow"><div class="barrow-top"><b>${esc(o.ind.label)}</b><span>${fo(o.realizado)} / ${fo(o.alvo)} · ${Math.round(o.pct)}%</span></div><div class="track"><div class="fill" style="background:${o.pct>=100?'var(--accent)':'var(--accent-2)'};width:0" data-w="${p}"></div></div></div>`;}).join('')}</div></div>` : '';
   return `<section class="grid">
     <div class="panel col-8" style="animation-delay:.02s">
       <div class="panel-head"><div><h3>🎯 Meta do Mês · ${esc(s.ind.label)}</h3><p>${esc(s.label)} · principal indicador</p></div><div style="display:flex;gap:8px;align-items:center">${statusPill}${admin?'<a href="#meta" class="btn sm">Editar</a>':''}</div></div>
@@ -527,6 +550,7 @@ function metaWidgetHTML(){
         <div class="mini-stat"><b>${s.diasRestantes}</b><small>Dias restantes</small></div>
         <div class="mini-stat"><b>${fr(s.ritmoNec)}<span style="font-size:12px;color:var(--text-muted)">/dia</span></b><small>Ritmo necessário</small></div>
       </div>
+      ${outrasHTML}
       <div style="margin-top:18px"><div style="font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.06em;margin-bottom:9px">Ações para atingir a meta</div>
         <div class="help-list">${metaAcoes(s).map(t=>`<div class="hi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12l5 5L20 7"/></svg><div>${t}</div></div>`).join('')}</div>
       </div>
@@ -1261,25 +1285,57 @@ async function submitUser(e){
 window.userEdit=userEdit; window.userRemove=userRemove; window.submitUser=submitUser;
 
 /* ============================================================
-   META (admin) — cadastro do principal indicador do projeto
+   META (admin) — simulador + cadastro de metas do mês
    ============================================================ */
+let SIM = { fat:0, ticket:0, conv:0, vpc:0, vendas:0, atend:0, clientes:0 };
+function simDefaults(){
+  const uniq = clientAgg().length;
+  const vpc = uniq ? (M.compras/uniq) : 1.5;          // vendas por cliente (recompra)
+  const conv = M.convRate || 60;                       // taxa de conversão real
+  return { vpc:Math.max(1, +vpc.toFixed(1)), conv:Math.round(conv) };
+}
 VIEW.meta = ()=>{
   if(!BadareAuth.isAdmin()){ location.hash='#dashboard'; return; }
   const ym = currentYm();
   const indOpts = Object.entries(INDICADORES).map(([k,v])=>`<option value="${k}">${v.label}</option>`).join('');
-  const metasList = Object.keys(METAS).sort().reverse();
+  const d = simDefaults();
+  // tabela: todas as metas (mês × indicador)
+  const rows=[];
+  Object.keys(METAS).sort().reverse().forEach(k=>{
+    metaIndicadores(k).forEach(ind=>{ const s=metaSnapshot(k,ind); if(s) rows.push(s); });
+  });
   $('#view').innerHTML = `<div class="view">
     <div class="mode-banner cloud">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/><circle cx="12" cy="12" r="4"/></svg>
-      <span><b style="font-weight:600">Meta do projeto.</b>&nbsp;Defina o alvo do mês para o indicador principal. Ele aparece no Dashboard com previsão, o que falta e as ações para atingir.</span>
+      <span><b style="font-weight:600">Metas no Supabase.</b>&nbsp;Use o simulador para calcular as metas a partir do faturamento desejado, transforme em metas com 1 clique e acompanhe a apuração de todas.</span>
     </div>
+
+    <div class="grid"><div class="panel col-12">
+      <div class="panel-head"><div><h3>🧮 Simulador de Metas</h3><p>Informe o faturamento desejado e as premissas — o sistema calcula vendas, atendimentos e clientes necessários</p></div></div>
+      <div class="form-grid" style="grid-template-columns:repeat(5,1fr)">
+        <div class="field"><label for="sim_fat">Faturamento desejado (R$)</label><input id="sim_fat" type="number" min="0" step="any" value="250000"></div>
+        <div class="field"><label for="sim_ticket">Ticket médio (R$/venda)</label><input id="sim_ticket" type="number" min="0" step="any" value="250"></div>
+        <div class="field"><label for="sim_conv">Taxa de conversão (%)</label><input id="sim_conv" type="number" min="1" max="100" step="any" value="${d.conv}"></div>
+        <div class="field"><label for="sim_vpc">Vendas por cliente</label><input id="sim_vpc" type="number" min="0.1" step="any" value="${d.vpc}"></div>
+        <div class="field"><label for="sim_mes">Aplicar no mês</label><input id="sim_mes" type="month" value="${ym}"></div>
+      </div>
+      <div id="simResults" class="stat-strip" style="grid-template-columns:repeat(4,1fr);margin-top:6px"></div>
+      <div id="simHint" style="font-size:12.5px;color:var(--text-muted);margin-top:12px;line-height:1.5"></div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;align-items:center">
+        <button class="btn primary" onclick="simSetAll()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l2.4 7.4H22l-6 4.6 2.3 7.4-6.3-4.7L5.7 21.4 8 14 2 9.4h7.6z"/></svg>Tornar todas em metas do mês</button>
+        <span style="font-size:12px;color:var(--text-dim)">Premissas pré-preenchidas pelo histórico (conversão ${d.conv}%, recompra ${d.vpc}). Ajuste à vontade.</span>
+      </div>
+      <p style="font-size:11.5px;color:var(--text-dim);margin-top:10px;line-height:1.5">ℹ️ <b>Vendas, atendimentos e clientes</b> são apurados automaticamente pelos registros. O <b>faturamento</b> é apurado pela <b>receita de taxas</b> lançada nos atendimentos — para apurar a receita de produtos, registre o valor da venda em cada atendimento.</p>
+    </div></div>
+
     <div class="grid">
       <div class="panel col-5">
-        <div class="panel-head"><div><h3 id="metaFormTitle">Definir meta do mês</h3><p>Salvo no Supabase, visível para todo o time</p></div></div>
+        <div class="panel-head"><div><h3 id="metaFormTitle">Adicionar meta avulsa</h3><p>Salvo no Supabase, visível para todo o time</p></div></div>
         <form id="formMeta" class="form-grid" autocomplete="off" novalidate>
           <div class="field full"><label for="m_mes">Mês de referência</label><input id="m_mes" type="month" value="${ym}"></div>
-          <div class="field full"><label for="m_ind">Indicador principal</label><select id="m_ind">${indOpts}</select></div>
+          <div class="field full"><label for="m_ind">Indicador</label><select id="m_ind">${indOpts}</select></div>
           <div class="field full"><label for="m_alvo">Meta (alvo a atingir)</label><input id="m_alvo" type="number" min="0" step="any" placeholder="Ex.: 120"></div>
+          <label class="check" style="align-self:flex-start"><input type="checkbox" id="m_principal"><span>Definir como indicador principal do mês (destaque no Dashboard)</span></label>
           <div class="field full form-actions">
             <button type="submit" class="btn primary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>Salvar meta</button>
           </div>
@@ -1287,54 +1343,107 @@ VIEW.meta = ()=>{
         <div id="metaPreview" style="margin-top:6px"></div>
       </div>
       <div class="panel col-7">
-        <div class="panel-head"><div><h3>Metas cadastradas</h3><p>${metasList.length} mês(es) com meta definida</p></div></div>
-        ${metasList.length? `<div class="tbl-wrap"><table>
+        <div class="panel-head"><div><h3>Apuração das metas</h3><p>${rows.length} meta(s) cadastrada(s) · realizado vs alvo</p></div></div>
+        ${rows.length? `<div class="tbl-wrap"><table>
           <thead><tr><th>Mês</th><th>Indicador</th><th>Meta</th><th>Realizado</th><th>%</th><th style="text-align:right">Ações</th></tr></thead>
-          <tbody>${metasList.map(k=>{const s=metaSnapshot(k);const f=v=>metaVal(s.ind.money,v);return `<tr>
-            <td class="cell-strong">${esc(ymLabel(k))}</td><td class="muted">${esc(s.ind.label)}</td>
+          <tbody>${rows.map(s=>{const f=v=>metaVal(s.ind.money,v);return `<tr>
+            <td class="cell-strong">${esc(ymLabel(s.ym))}</td>
+            <td class="muted">${esc(s.ind.label)}${s.isPrincipal?' <span class="role-pill admin" style="font-size:10px">principal</span>':''}</td>
             <td>${f(s.alvo)}</td><td>${f(s.realizado)}</td>
             <td>${s.pct>=100?'<span class="pill ok">'+Math.round(s.pct)+'%</span>':'<span class="pill '+(s.onTrack?'info':'mid')+'">'+Math.round(s.pct)+'%</span>'}</td>
             <td><div class="u-actions" style="justify-content:flex-end">
-              <button class="iconbtn" title="Editar" onclick="metaEdit('${k}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg></button>
-              <button class="iconbtn" title="Excluir" onclick="metaDelete('${k}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></button>
+              ${s.isPrincipal?'':`<button class="iconbtn" title="Tornar principal" onclick="metaSetPrincipal('${s.ym}','${s.indicador}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l2.4 7.4H22l-6 4.6 2.3 7.4-6.3-4.7L5.7 21.4 8 14 2 9.4h7.6z"/></svg></button>`}
+              <button class="iconbtn" title="Editar" onclick="metaEdit('${s.ym}','${s.indicador}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg></button>
+              <button class="iconbtn" title="Excluir" onclick="metaDelete('${s.ym}','${s.indicador}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></button>
             </div></td></tr>`;}).join('')}</tbody></table></div>`
-          : '<div class="empty" style="padding:34px">Nenhuma meta cadastrada ainda.</div>'}
+          : '<div class="empty" style="padding:34px">Nenhuma meta cadastrada ainda. Use o simulador acima.</div>'}
       </div>
     </div>
   </div>`;
-  // pré-preenche se já existir meta para o mês atual
-  if(METAS[ym]){ $('#m_ind').value=METAS[ym].indicador; $('#m_alvo').value=METAS[ym].alvo; }
-  const upd=()=>metaPreview();
-  $('#m_mes').addEventListener('change',()=>{ const k=$('#m_mes').value; if(METAS[k]){$('#m_ind').value=METAS[k].indicador;$('#m_alvo').value=METAS[k].alvo;} upd(); });
-  $('#m_ind').addEventListener('change',upd); $('#m_alvo').addEventListener('input',upd);
+  ['sim_fat','sim_ticket','sim_conv','sim_vpc'].forEach(id=>$('#'+id).addEventListener('input',metaSim));
+  $('#m_ind').addEventListener('change',metaPreview); $('#m_alvo').addEventListener('input',metaPreview);
+  $('#m_mes').addEventListener('change',metaPreview);
   $('#formMeta').addEventListener('submit',submitMeta);
-  metaPreview();
+  metaSim(); metaPreview();
 };
+function metaSim(){
+  const g=id=>{const el=$('#'+id);return el?+el.value||0:0;};
+  SIM.fat=g('sim_fat'); SIM.ticket=g('sim_ticket'); SIM.conv=g('sim_conv'); SIM.vpc=g('sim_vpc');
+  SIM.vendas = SIM.ticket>0 ? SIM.fat/SIM.ticket : 0;
+  SIM.atend  = SIM.conv>0   ? SIM.vendas/(SIM.conv/100) : 0;
+  SIM.clientes = SIM.vpc>0  ? SIM.vendas/SIM.vpc : 0;
+  const box=$('#simResults'); if(!box) return;
+  const card=(label,val,tipo)=>`<div class="mini-stat" style="display:flex;flex-direction:column;gap:7px;align-items:flex-start">
+    <b>${val}</b><small>${label}</small>
+    <button class="btn sm" style="margin-top:2px" onclick="simSetMeta('${tipo}')">Definir meta</button></div>`;
+  box.innerHTML =
+    card('Faturamento (meta)', fmtBR(SIM.fat), 'faturamento') +
+    card('Vendas necessárias', fmtN(Math.ceil(SIM.vendas)), 'compras') +
+    card('Atendimentos necessários', fmtN(Math.ceil(SIM.atend)), 'atendimentos') +
+    card('Clientes necessários', fmtN(Math.ceil(SIM.clientes)), 'novos');
+  const hint=$('#simHint');
+  if(hint){
+    const dias=22; // dias úteis aprox.
+    hint.innerHTML = SIM.vendas>0
+      ? `Para faturar <b>${fmtBR(SIM.fat)}</b> com ticket médio de <b>${fmtBR(SIM.ticket)}</b>, você precisa de <b>${fmtN(Math.ceil(SIM.vendas))} vendas</b> — o que, com conversão de ${SIM.conv}%, exige <b>${fmtN(Math.ceil(SIM.atend))} atendimentos</b> e cerca de <b>${fmtN(Math.ceil(SIM.clientes))} clientes</b> (recompra ${SIM.vpc}). Ritmo: ~${fmtN(Math.ceil(SIM.vendas/dias))} vendas/dia útil.`
+      : 'Informe o ticket médio para calcular as metas.';
+  }
+}
+async function simSetMeta(tipo){
+  const mes=$('#sim_mes')?.value||currentYm();
+  const map={faturamento:Math.round(SIM.fat), compras:Math.ceil(SIM.vendas), atendimentos:Math.ceil(SIM.atend), novos:Math.ceil(SIM.clientes)};
+  const alvo=map[tipo];
+  if(!(alvo>0)){ toast('Ajuste os valores do simulador'); return; }
+  try{ await saveMeta(mes,tipo,alvo, tipo==='faturamento'); toast(INDICADORES[tipo].label+': meta definida em '+ymLabel(mes)); VIEW.meta(); }
+  catch(ex){ toast(ex.message); }
+}
+async function simSetAll(){
+  const mes=$('#sim_mes')?.value||currentYm();
+  if(!(SIM.fat>0 && SIM.vendas>0)){ toast('Preencha o faturamento e o ticket médio'); return; }
+  try{
+    await saveMeta(mes,'faturamento',Math.round(SIM.fat), true);
+    await saveMeta(mes,'compras',Math.ceil(SIM.vendas));
+    await saveMeta(mes,'atendimentos',Math.ceil(SIM.atend));
+    await saveMeta(mes,'novos',Math.ceil(SIM.clientes));
+    toast('4 metas definidas para '+ymLabel(mes));
+    VIEW.meta();
+  }catch(ex){ toast(ex.message); }
+}
 function metaPreview(){
   const box=$('#metaPreview'); if(!box) return;
   const ym=$('#m_mes').value, ind=$('#m_ind').value, alvo=+$('#m_alvo').value||0;
   if(!ym || !alvo){ box.innerHTML=''; return; }
-  const saved=METAS[ym]; METAS[ym]={indicador:ind,alvo};       // simulação temporária
-  const s=metaSnapshot(ym); if(saved) METAS[ym]=saved; else delete METAS[ym];
+  const saved=JSON.stringify(METAS[ym]||null);
+  if(!METAS[ym]) METAS[ym]={principal:ind,alvos:{}};
+  const prevAlvo=METAS[ym].alvos[ind];
+  METAS[ym].alvos[ind]=alvo;                         // simulação temporária
+  const s=metaSnapshot(ym,ind);
+  // restaura
+  if(saved==='null') delete METAS[ym]; else { METAS[ym]=JSON.parse(saved); }
+  if(!s){ box.innerHTML=''; return; }
   const f=v=>metaVal(s.ind.money,v);
   box.innerHTML=`<div class="insight ${s.onTrack?'':'warn'}" style="border-left-color:${s.onTrack?'var(--accent)':'var(--warn)'}">
-    <div class="ih">Prévia · ${esc(ymLabel(ym))}</div>
+    <div class="ih">Prévia · ${esc(s.ind.label)} · ${esc(ymLabel(ym))}</div>
     <p style="margin-top:2px">Realizado <b>${f(s.realizado)}</b> de ${f(s.alvo)} (${Math.round(s.pct)}%). Previsão do mês: <b>${f(s.previsao)}</b> · falta <b>${f(s.falta)}</b>.</p></div>`;
 }
 async function submitMeta(e){
   e.preventDefault();
-  const ym=$('#m_mes').value, ind=$('#m_ind').value, alvo=+$('#m_alvo').value;
+  const ym=$('#m_mes').value, ind=$('#m_ind').value, alvo=+$('#m_alvo').value, principal=$('#m_principal').checked;
   if(!ym){ toast('Escolha o mês'); return; }
   if(!(alvo>0)){ toast('Informe um alvo maior que zero'); return; }
-  try{ await saveMeta(ym,ind,alvo); toast('Meta salva!'); VIEW.meta(); }
+  try{ await saveMeta(ym,ind,alvo,principal); toast('Meta salva!'); VIEW.meta(); }
   catch(ex){ toast('Erro ao salvar meta: '+(ex.message||ex)); }
 }
-function metaEdit(ym){ $('#m_mes').value=ym; $('#m_ind').value=METAS[ym].indicador; $('#m_alvo').value=METAS[ym].alvo; metaPreview(); $('#m_alvo').scrollIntoView({block:'center'}); }
-async function metaDelete(ym){
-  if(!confirm('Excluir a meta de '+ymLabel(ym)+'?')) return;
-  try{ await removeMeta(ym); toast('Meta excluída'); VIEW.meta(); }catch(ex){ toast(ex.message); }
+function metaEdit(ym,ind){ $('#m_mes').value=ym; $('#m_ind').value=ind; $('#m_alvo').value=METAS[ym].alvos[ind]; $('#m_principal').checked=(METAS[ym].principal===ind); metaPreview(); $('#m_alvo').scrollIntoView({block:'center'}); }
+async function metaDelete(ym,ind){
+  if(!confirm('Excluir a meta de '+(INDICADORES[ind]?INDICADORES[ind].label:ind)+' em '+ymLabel(ym)+'?')) return;
+  try{ await removeMeta(ym,ind); toast('Meta excluída'); VIEW.meta(); }catch(ex){ toast(ex.message); }
+}
+async function metaSetPrincipal(ym,ind){
+  try{ await saveMeta(ym,ind,METAS[ym].alvos[ind],true); toast('Indicador principal atualizado'); VIEW.meta(); }catch(ex){ toast(ex.message); }
 }
 window.submitMeta=submitMeta; window.metaEdit=metaEdit; window.metaDelete=metaDelete;
+window.metaSim=metaSim; window.simSetMeta=simSetMeta; window.simSetAll=simSetAll; window.metaSetPrincipal=metaSetPrincipal;
 
 /* ---------- NOVO ATENDIMENTO (tela de inserção) ---------- */
 const MESES=['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
@@ -1526,7 +1635,7 @@ async function boot(){
     const data = await BadareDB.load();
     ATEND = data.atendimentos || [];
     ENTREGAS = data.entregas || [];
-    await loadState();   // depois dos dados: maxDate() usa a última data real
+    await loadState();   // define a data de referência = hoje
     await loadMetas();
   }catch(err){
     console.error('Falha ao carregar do Supabase:',err);
