@@ -8,6 +8,21 @@
 // Dados carregados de forma assíncrona pela camada BadareDB (local ou Supabase).
 let ATEND = [];
 let ENTREGAS = [];
+
+/* Normalização de categorias: corrige erros de digitação vindos da planilha
+   (ex.: "Sjplemento" -> "Suplemento", "Fórmula Infatil" -> "Fórmula Infantil")
+   para que variações não virem categorias duplicadas nos gráficos/filtros. */
+const CATEGORIA_CANON = {
+  'suplemento':'Suplemento', 'sjplemento':'Suplemento', 'suplmento':'Suplemento',
+  'dieta enteral':'Dieta Enteral',
+  'formula infantil':'Fórmula Infantil', 'formula infatil':'Fórmula Infantil',
+  'modulo':'Módulo',
+};
+function canonCategoria(v){
+  if(!v) return v;
+  const k = String(v).trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  return CATEGORIA_CANON[k] || String(v).trim();
+}
 const DBMETA = (window.BADARE_DATA && window.BADARE_DATA.meta) || {};
 
 /* ---------- estado compartilhado (no Supabase, nada local) ----------
@@ -360,11 +375,13 @@ function recompute(){
    ============================================================ */
 /* Modelo: METAS = { 'YYYY-MM': { principal:<indicador>, alvos:{ <indicador>:<alvo> } } } */
 let METAS = {};
+/* Indicadores de meta — foco em CLIENTES (faturamento fica no sistema da empresa).
+   val(r) recebe os atendimentos do mês de referência. */
 const INDICADORES = {
-  faturamento:  {label:'Faturamento (R$)',       unit:'',             money:true,  val:r=>r.reduce((s,a)=>s+(+a.taxaCliente||0),0)},
-  compras:      {label:'Vendas (compras)',       unit:'vendas',       money:false, val:r=>r.filter(a=>a.compra).length},
-  atendimentos: {label:'Atendimentos',           unit:'atendimentos', money:false, val:r=>r.length},
-  novos:        {label:'Clientes novos',         unit:'clientes',     money:false, val:r=>r.filter(a=>a.status==='Novo').length},
+  novos:        {label:'Clientes novos',        unit:'clientes',    money:false, val:r=>r.filter(a=>a.status==='Novo').length},
+  recorrentes:  {label:'Clientes recorrentes',  unit:'clientes',    money:false, val:r=>r.filter(a=>a.status==='Recorrente').length},
+  atendidos:    {label:'Clientes atendidos',    unit:'clientes',    money:false, val:r=>new Set(r.map(a=>a.cliente).filter(Boolean)).size},
+  followups:    {label:'Follow-ups em dia',     unit:'follow-ups',  money:false, val:r=>r.filter(a=>a.retornar && (store.contatados[a.id] || daysBetween(a.retornar, store.refDate)>=0)).length},
 };
 function currentYm(){ return (store.refDate||'2026-01-01').slice(0,7); }
 function ymLabel(ym){ const [y,m]=ym.split('-').map(Number); return (MES_ORDER[m-1]||ym)+'/'+y; }
@@ -374,7 +391,12 @@ function migrateMetas(){
   Object.keys(METAS).forEach(ym=>{
     const m=METAS[ym];
     if(m && m.indicador && !m.alvos){ METAS[ym]={principal:m.indicador, alvos:{[m.indicador]:+m.alvo||0}}; }
-    else if(m && !m.alvos){ METAS[ym]={principal:'faturamento', alvos:{}}; }
+    else if(m && !m.alvos){ METAS[ym]={principal:'novos', alvos:{}}; }
+    // compat: metas antigas de faturamento/vendas/atendimentos não existem mais
+    if(METAS[ym] && METAS[ym].alvos){
+      ['faturamento','compras','atendimentos'].forEach(old=>{ delete METAS[ym].alvos[old]; });
+      if(!(METAS[ym].principal in INDICADORES)) METAS[ym].principal = Object.keys(METAS[ym].alvos)[0] || 'novos';
+    }
   });
 }
 async function loadMetas(){
@@ -403,7 +425,7 @@ function metaSnapshot(ym, indicador){
   const m = METAS[ym]; if(!m || !m.alvos) return null;
   indicador = indicador || m.principal || Object.keys(m.alvos)[0];
   if(!indicador || !(indicador in m.alvos)) return null;
-  const ind = INDICADORES[indicador] || INDICADORES.compras;
+  const ind = INDICADORES[indicador] || INDICADORES.novos;
   const [y,mo] = ym.split('-').map(Number);
   const recs = ATEND.filter(a=>(a.data||'').slice(0,7)===ym);
   const realizado = ind.val(recs);
@@ -1287,18 +1309,10 @@ window.userEdit=userEdit; window.userRemove=userRemove; window.submitUser=submit
 /* ============================================================
    META (admin) — simulador + cadastro de metas do mês
    ============================================================ */
-let SIM = { fat:0, ticket:0, conv:0, vpc:0, vendas:0, atend:0, clientes:0 };
-function simDefaults(){
-  const uniq = clientAgg().length;
-  const vpc = uniq ? (M.compras/uniq) : 1.5;          // vendas por cliente (recompra)
-  const conv = M.convRate || 60;                       // taxa de conversão real
-  return { vpc:Math.max(1, +vpc.toFixed(1)), conv:Math.round(conv) };
-}
 VIEW.meta = ()=>{
   if(!BadareAuth.isAdmin()){ location.hash='#dashboard'; return; }
   const ym = currentYm();
   const indOpts = Object.entries(INDICADORES).map(([k,v])=>`<option value="${k}">${v.label}</option>`).join('');
-  const d = simDefaults();
   // tabela: todas as metas (mês × indicador)
   const rows=[];
   Object.keys(METAS).sort().reverse().forEach(k=>{
@@ -1307,25 +1321,24 @@ VIEW.meta = ()=>{
   $('#view').innerHTML = `<div class="view">
     <div class="mode-banner cloud">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/><circle cx="12" cy="12" r="4"/></svg>
-      <span><b style="font-weight:600">Metas no Supabase.</b>&nbsp;Use o simulador para calcular as metas a partir do faturamento desejado, transforme em metas com 1 clique e acompanhe a apuração de todas.</span>
+      <span><b style="font-weight:600">Metas no Supabase.</b>&nbsp;Defina as metas de clientes do mês para a equipe — novos, recorrentes, atendidos e follow-ups — e acompanhe a apuração de todas. Faturamento fica no sistema da empresa.</span>
     </div>
 
     <div class="grid"><div class="panel col-12">
-      <div class="panel-head"><div><h3>🧮 Simulador de Metas</h3><p>Informe o faturamento desejado e as premissas — o sistema calcula vendas, atendimentos e clientes necessários</p></div></div>
+      <div class="panel-head"><div><h3>🎯 Metas de clientes do mês</h3><p>Preencha os alvos da equipe — deixe em branco o que não quiser cobrar neste mês</p></div></div>
       <div class="form-grid" style="grid-template-columns:repeat(5,1fr)">
-        <div class="field"><label for="sim_fat">Faturamento desejado (R$)</label><input id="sim_fat" type="number" min="0" step="any" value="250000"></div>
-        <div class="field"><label for="sim_ticket">Ticket médio (R$/venda)</label><input id="sim_ticket" type="number" min="0" step="any" value="250"></div>
-        <div class="field"><label for="sim_conv">Taxa de conversão (%)</label><input id="sim_conv" type="number" min="1" max="100" step="any" value="${d.conv}"></div>
-        <div class="field"><label for="sim_vpc">Vendas por cliente</label><input id="sim_vpc" type="number" min="0.1" step="any" value="${d.vpc}"></div>
-        <div class="field"><label for="sim_mes">Aplicar no mês</label><input id="sim_mes" type="month" value="${ym}"></div>
+        <div class="field"><label for="q_novos">Clientes novos</label><input id="q_novos" type="number" min="0" step="1" placeholder="Ex.: 40"></div>
+        <div class="field"><label for="q_recorrentes">Clientes recorrentes</label><input id="q_recorrentes" type="number" min="0" step="1" placeholder="Ex.: 80"></div>
+        <div class="field"><label for="q_atendidos">Clientes atendidos</label><input id="q_atendidos" type="number" min="0" step="1" placeholder="Ex.: 150"></div>
+        <div class="field"><label for="q_followups">Follow-ups em dia</label><input id="q_followups" type="number" min="0" step="1" placeholder="Ex.: 60"></div>
+        <div class="field"><label for="q_mes">Aplicar no mês</label><input id="q_mes" type="month" value="${ym}"></div>
       </div>
-      <div id="simResults" class="stat-strip" style="grid-template-columns:repeat(4,1fr);margin-top:6px"></div>
-      <div id="simHint" style="font-size:12.5px;color:var(--text-muted);margin-top:12px;line-height:1.5"></div>
+      <div class="field" style="max-width:280px;margin-top:4px"><label for="q_principal">Indicador principal (destaque no Dashboard)</label><select id="q_principal">${indOpts}</select></div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;align-items:center">
-        <button class="btn primary" onclick="simSetAll()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l2.4 7.4H22l-6 4.6 2.3 7.4-6.3-4.7L5.7 21.4 8 14 2 9.4h7.6z"/></svg>Tornar todas em metas do mês</button>
-        <span style="font-size:12px;color:var(--text-dim)">Premissas pré-preenchidas pelo histórico (conversão ${d.conv}%, recompra ${d.vpc}). Ajuste à vontade.</span>
+        <button class="btn primary" onclick="metaQuickSave()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>Salvar metas do mês</button>
+        <span style="font-size:12px;color:var(--text-dim)">Cada alvo vira uma meta no mês escolhido, visível para todo o time.</span>
       </div>
-      <p style="font-size:11.5px;color:var(--text-dim);margin-top:10px;line-height:1.5">ℹ️ <b>Vendas, atendimentos e clientes</b> são apurados automaticamente pelos registros. O <b>faturamento</b> é apurado pela <b>receita de taxas</b> lançada nos atendimentos — para apurar a receita de produtos, registre o valor da venda em cada atendimento.</p>
+      <p style="font-size:11.5px;color:var(--text-dim);margin-top:10px;line-height:1.5">ℹ️ Tudo é apurado automaticamente pelos atendimentos: <b>novos</b> e <b>recorrentes</b> pelo status do cliente, <b>atendidos</b> pelos clientes únicos do mês, e <b>follow-ups em dia</b> pelos retornos contatados ou ainda dentro do prazo.</p>
     </div></div>
 
     <div class="grid">
@@ -1356,56 +1369,26 @@ VIEW.meta = ()=>{
               <button class="iconbtn" title="Editar" onclick="metaEdit('${s.ym}','${s.indicador}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg></button>
               <button class="iconbtn" title="Excluir" onclick="metaDelete('${s.ym}','${s.indicador}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></button>
             </div></td></tr>`;}).join('')}</tbody></table></div>`
-          : '<div class="empty" style="padding:34px">Nenhuma meta cadastrada ainda. Use o simulador acima.</div>'}
+          : '<div class="empty" style="padding:34px">Nenhuma meta cadastrada ainda. Use o painel de metas acima.</div>'}
       </div>
     </div>
   </div>`;
-  ['sim_fat','sim_ticket','sim_conv','sim_vpc'].forEach(id=>$('#'+id).addEventListener('input',metaSim));
   $('#m_ind').addEventListener('change',metaPreview); $('#m_alvo').addEventListener('input',metaPreview);
   $('#m_mes').addEventListener('change',metaPreview);
   $('#formMeta').addEventListener('submit',submitMeta);
-  metaSim(); metaPreview();
+  metaPreview();
 };
-function metaSim(){
-  const g=id=>{const el=$('#'+id);return el?+el.value||0:0;};
-  SIM.fat=g('sim_fat'); SIM.ticket=g('sim_ticket'); SIM.conv=g('sim_conv'); SIM.vpc=g('sim_vpc');
-  SIM.vendas = SIM.ticket>0 ? SIM.fat/SIM.ticket : 0;
-  SIM.atend  = SIM.conv>0   ? SIM.vendas/(SIM.conv/100) : 0;
-  SIM.clientes = SIM.vpc>0  ? SIM.vendas/SIM.vpc : 0;
-  const box=$('#simResults'); if(!box) return;
-  const card=(label,val,tipo)=>`<div class="mini-stat" style="display:flex;flex-direction:column;gap:7px;align-items:flex-start">
-    <b>${val}</b><small>${label}</small>
-    <button class="btn sm" style="margin-top:2px" onclick="simSetMeta('${tipo}')">Definir meta</button></div>`;
-  box.innerHTML =
-    card('Faturamento (meta)', fmtBR(SIM.fat), 'faturamento') +
-    card('Vendas necessárias', fmtN(Math.ceil(SIM.vendas)), 'compras') +
-    card('Atendimentos necessários', fmtN(Math.ceil(SIM.atend)), 'atendimentos') +
-    card('Clientes necessários', fmtN(Math.ceil(SIM.clientes)), 'novos');
-  const hint=$('#simHint');
-  if(hint){
-    const dias=22; // dias úteis aprox.
-    hint.innerHTML = SIM.vendas>0
-      ? `Para faturar <b>${fmtBR(SIM.fat)}</b> com ticket médio de <b>${fmtBR(SIM.ticket)}</b>, você precisa de <b>${fmtN(Math.ceil(SIM.vendas))} vendas</b> — o que, com conversão de ${SIM.conv}%, exige <b>${fmtN(Math.ceil(SIM.atend))} atendimentos</b> e cerca de <b>${fmtN(Math.ceil(SIM.clientes))} clientes</b> (recompra ${SIM.vpc}). Ritmo: ~${fmtN(Math.ceil(SIM.vendas/dias))} vendas/dia útil.`
-      : 'Informe o ticket médio para calcular as metas.';
-  }
-}
-async function simSetMeta(tipo){
-  const mes=$('#sim_mes')?.value||currentYm();
-  const map={faturamento:Math.round(SIM.fat), compras:Math.ceil(SIM.vendas), atendimentos:Math.ceil(SIM.atend), novos:Math.ceil(SIM.clientes)};
-  const alvo=map[tipo];
-  if(!(alvo>0)){ toast('Ajuste os valores do simulador'); return; }
-  try{ await saveMeta(mes,tipo,alvo, tipo==='faturamento'); toast(INDICADORES[tipo].label+': meta definida em '+ymLabel(mes)); VIEW.meta(); }
-  catch(ex){ toast(ex.message); }
-}
-async function simSetAll(){
-  const mes=$('#sim_mes')?.value||currentYm();
-  if(!(SIM.fat>0 && SIM.vendas>0)){ toast('Preencha o faturamento e o ticket médio'); return; }
+/* salva de uma vez as metas de clientes do mês a partir do painel rápido */
+async function metaQuickSave(){
+  const g=id=>{const el=$('#'+id);return el?Math.round(+el.value||0):0;};
+  const mes=$('#q_mes')?.value||currentYm();
+  const principal=$('#q_principal')?.value||'novos';
+  const alvos={novos:g('q_novos'), recorrentes:g('q_recorrentes'), atendidos:g('q_atendidos'), followups:g('q_followups')};
+  const preenchidos=Object.entries(alvos).filter(([,v])=>v>0);
+  if(!preenchidos.length){ toast('Informe pelo menos uma meta'); return; }
   try{
-    await saveMeta(mes,'faturamento',Math.round(SIM.fat), true);
-    await saveMeta(mes,'compras',Math.ceil(SIM.vendas));
-    await saveMeta(mes,'atendimentos',Math.ceil(SIM.atend));
-    await saveMeta(mes,'novos',Math.ceil(SIM.clientes));
-    toast('4 metas definidas para '+ymLabel(mes));
+    for(const [ind,alvo] of preenchidos){ await saveMeta(mes,ind,alvo, ind===principal); }
+    toast(preenchidos.length+' meta(s) definida(s) para '+ymLabel(mes));
     VIEW.meta();
   }catch(ex){ toast(ex.message); }
 }
@@ -1443,7 +1426,7 @@ async function metaSetPrincipal(ym,ind){
   try{ await saveMeta(ym,ind,METAS[ym].alvos[ind],true); toast('Indicador principal atualizado'); VIEW.meta(); }catch(ex){ toast(ex.message); }
 }
 window.submitMeta=submitMeta; window.metaEdit=metaEdit; window.metaDelete=metaDelete;
-window.metaSim=metaSim; window.simSetMeta=simSetMeta; window.simSetAll=simSetAll; window.metaSetPrincipal=metaSetPrincipal;
+window.metaQuickSave=metaQuickSave; window.metaSetPrincipal=metaSetPrincipal;
 
 /* ---------- NOVO ATENDIMENTO (tela de inserção) ---------- */
 const MESES=['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
@@ -1633,7 +1616,7 @@ async function boot(){
   $('#view').innerHTML='<div class="empty" style="padding:80px"><div>Carregando dados…</div></div>';
   try{
     const data = await BadareDB.load();
-    ATEND = data.atendimentos || [];
+    ATEND = (data.atendimentos || []).map(a=>({...a, categoria:canonCategoria(a.categoria)}));
     ENTREGAS = data.entregas || [];
     await loadState();   // define a data de referência = hoje
     await loadMetas();

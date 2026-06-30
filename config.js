@@ -11,6 +11,6 @@
    dado. Veja o passo a passo em supabase/README.md.
    ============================================================ */
 window.BADARE_CONFIG = {
-  supabaseUrl: "https://svfscujgepzvvjgsylvz.supabase.co",   // ex.: "https://xxxxxxxx.supabase.co"
-  supabaseKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN2ZnNjdWpnZXB6dnZqZ3N5bHZ6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI1NzcwMTIsImV4cCI6MjA5ODE1MzAxMn0.WMiX6DykBgltas75AjDUKqPZS5uXFr5ARpCv6o6d7O0"    // ex.: "eyJhbGciOiJI..."  (chave anon public)
+  supabaseUrl: "https://svfscujgepzvvjgsylvz.supabase.co",   // projeto Supabase do Badare
+  supabaseKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN2ZnNjdWpnZXB6dnZqZ3N5bHZ6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI1NzcwMTIsImV4cCI6MjA5ODE1MzAxMn0.WMiX6DykBgltas75AjDUKqPZS5uXFr5ARpCv6o6d7O0"   // chave anon public
 };
