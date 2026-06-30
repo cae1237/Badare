@@ -124,8 +124,8 @@ const ROUTES = [
   {id:'entregas', label:'Entregas', sub:'Controle logístico e taxas', icon:'T'},
   {id:'produtos', label:'Produtos', sub:'Ranking e categorias', icon:'M20 7h-9M14 17H5'},
   {id:'relatorios', label:'Relatórios', sub:'Análises detalhadas', icon:'M12 20V10M18 20V4M6 20v-4'},
+  {id:'meta', label:'Meta', sub:'Metas de clientes do mês', icon:'TG'},
   {grp:'Administração', admin:true},
-  {id:'meta', label:'Meta', sub:'Cadastro do principal indicador', icon:'TG', admin:true},
   {id:'usuarios', label:'Usuários', sub:'Gestão de acessos e perfis', icon:'U', admin:true},
   {id:'config', label:'Configurações', sub:'Parâmetros e regras', icon:'G'},
 ];
@@ -1310,7 +1310,7 @@ window.userEdit=userEdit; window.userRemove=userRemove; window.submitUser=submit
    META (admin) — simulador + cadastro de metas do mês
    ============================================================ */
 VIEW.meta = ()=>{
-  if(!BadareAuth.isAdmin()){ location.hash='#dashboard'; return; }
+  const admin = !!(window.BadareAuth && BadareAuth.isAdmin());
   const ym = currentYm();
   const indOpts = Object.entries(INDICADORES).map(([k,v])=>`<option value="${k}">${v.label}</option>`).join('');
   // tabela: todas as metas (mês × indicador)
@@ -1318,13 +1318,14 @@ VIEW.meta = ()=>{
   Object.keys(METAS).sort().reverse().forEach(k=>{
     metaIndicadores(k).forEach(ind=>{ const s=metaSnapshot(k,ind); if(s) rows.push(s); });
   });
-  $('#view').innerHTML = `<div class="view">
-    <div class="mode-banner cloud">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/><circle cx="12" cy="12" r="4"/></svg>
-      <span><b style="font-weight:600">Metas no Supabase.</b>&nbsp;Defina as metas de clientes do mês para a equipe — novos, recorrentes, atendidos e follow-ups — e acompanhe a apuração de todas. Faturamento fica no sistema da empresa.</span>
-    </div>
 
-    <div class="grid"><div class="panel col-12">
+  // banner: cadastro p/ admin, somente-leitura p/ vendedor
+  const banner = admin
+    ? `<span><b style="font-weight:600">Metas no Supabase.</b>&nbsp;Defina as metas de clientes do mês para a equipe — novos, recorrentes, atendidos e follow-ups — e acompanhe a apuração de todas. Faturamento fica no sistema da empresa.</span>`
+    : `<span><b style="font-weight:600">Metas do mês.</b>&nbsp;Acompanhe aqui o realizado vs. alvo das metas da equipe. O cadastro é feito pelo administrador.</span>`;
+
+  // painéis de cadastro: somente admin
+  const cadastro = admin ? `<div class="grid"><div class="panel col-12">
       <div class="panel-head"><div><h3>🎯 Metas de clientes do mês</h3><p>Preencha os alvos da equipe — deixe em branco o que não quiser cobrar neste mês</p></div></div>
       <div class="form-grid" style="grid-template-columns:repeat(5,1fr)">
         <div class="field"><label for="q_novos">Clientes novos</label><input id="q_novos" type="number" min="0" step="1" placeholder="Ex.: 40"></div>
@@ -1339,10 +1340,10 @@ VIEW.meta = ()=>{
         <span style="font-size:12px;color:var(--text-dim)">Cada alvo vira uma meta no mês escolhido, visível para todo o time.</span>
       </div>
       <p style="font-size:11.5px;color:var(--text-dim);margin-top:10px;line-height:1.5">ℹ️ Tudo é apurado automaticamente pelos atendimentos: <b>novos</b> e <b>recorrentes</b> pelo status do cliente, <b>atendidos</b> pelos clientes únicos do mês, e <b>follow-ups em dia</b> pelos retornos contatados ou ainda dentro do prazo.</p>
-    </div></div>
+    </div></div>` : '';
 
-    <div class="grid">
-      <div class="panel col-5">
+  // formulário de meta avulsa: somente admin
+  const formAvulsa = admin ? `<div class="panel col-5">
         <div class="panel-head"><div><h3 id="metaFormTitle">Adicionar meta avulsa</h3><p>Salvo no Supabase, visível para todo o time</p></div></div>
         <form id="formMeta" class="form-grid" autocomplete="off" novalidate>
           <div class="field full"><label for="m_mes">Mês de referência</label><input id="m_mes" type="month" value="${ym}"></div>
@@ -1354,29 +1355,44 @@ VIEW.meta = ()=>{
           </div>
         </form>
         <div id="metaPreview" style="margin-top:6px"></div>
-      </div>
-      <div class="panel col-7">
+      </div>` : '';
+
+  // tabela de apuração: visível para todos; coluna/ações de edição só p/ admin
+  const apuracao = `<div class="panel ${admin?'col-7':'col-12'}">
         <div class="panel-head"><div><h3>Apuração das metas</h3><p>${rows.length} meta(s) cadastrada(s) · realizado vs alvo</p></div></div>
         ${rows.length? `<div class="tbl-wrap"><table>
-          <thead><tr><th>Mês</th><th>Indicador</th><th>Meta</th><th>Realizado</th><th>%</th><th style="text-align:right">Ações</th></tr></thead>
+          <thead><tr><th>Mês</th><th>Indicador</th><th>Meta</th><th>Realizado</th><th>%</th>${admin?'<th style="text-align:right">Ações</th>':''}</tr></thead>
           <tbody>${rows.map(s=>{const f=v=>metaVal(s.ind.money,v);return `<tr>
             <td class="cell-strong">${esc(ymLabel(s.ym))}</td>
             <td class="muted">${esc(s.ind.label)}${s.isPrincipal?' <span class="role-pill admin" style="font-size:10px">principal</span>':''}</td>
             <td>${f(s.alvo)}</td><td>${f(s.realizado)}</td>
             <td>${s.pct>=100?'<span class="pill ok">'+Math.round(s.pct)+'%</span>':'<span class="pill '+(s.onTrack?'info':'mid')+'">'+Math.round(s.pct)+'%</span>'}</td>
-            <td><div class="u-actions" style="justify-content:flex-end">
+            ${admin?`<td><div class="u-actions" style="justify-content:flex-end">
               ${s.isPrincipal?'':`<button class="iconbtn" title="Tornar principal" onclick="metaSetPrincipal('${s.ym}','${s.indicador}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l2.4 7.4H22l-6 4.6 2.3 7.4-6.3-4.7L5.7 21.4 8 14 2 9.4h7.6z"/></svg></button>`}
               <button class="iconbtn" title="Editar" onclick="metaEdit('${s.ym}','${s.indicador}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg></button>
               <button class="iconbtn" title="Excluir" onclick="metaDelete('${s.ym}','${s.indicador}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></button>
-            </div></td></tr>`;}).join('')}</tbody></table></div>`
-          : '<div class="empty" style="padding:34px">Nenhuma meta cadastrada ainda. Use o painel de metas acima.</div>'}
-      </div>
+            </div></td>`:''}</tr>`;}).join('')}</tbody></table></div>`
+          : `<div class="empty" style="padding:34px">Nenhuma meta cadastrada ainda.${admin?' Use o painel de metas acima.':' Peça a um administrador para cadastrar.'}</div>`}
+      </div>`;
+
+  $('#view').innerHTML = `<div class="view">
+    <div class="mode-banner cloud">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/><circle cx="12" cy="12" r="4"/></svg>
+      ${banner}
+    </div>
+    ${cadastro}
+    <div class="grid">
+      ${formAvulsa}
+      ${apuracao}
     </div>
   </div>`;
-  $('#m_ind').addEventListener('change',metaPreview); $('#m_alvo').addEventListener('input',metaPreview);
-  $('#m_mes').addEventListener('change',metaPreview);
-  $('#formMeta').addEventListener('submit',submitMeta);
-  metaPreview();
+
+  if(admin){
+    $('#m_ind').addEventListener('change',metaPreview); $('#m_alvo').addEventListener('input',metaPreview);
+    $('#m_mes').addEventListener('change',metaPreview);
+    $('#formMeta').addEventListener('submit',submitMeta);
+    metaPreview();
+  }
 };
 /* salva de uma vez as metas de clientes do mês a partir do painel rápido */
 async function metaQuickSave(){
