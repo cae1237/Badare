@@ -6,6 +6,7 @@
    • atendimentos / entregas  → tabelas
    • estado compartilhado     → app_kv (kvGet/kvSet): metas, marcações
    • usuários                 → funções RPC (ver auth.js)
+   • produtos_venda           → catálogo de custo/venda (planilha)
    ============================================================ */
 window.BadareDB = (function () {
   const SEED = window.BADARE_DATA || { atendimentos: [], entregas: [] };
@@ -103,6 +104,15 @@ window.BadareDB = (function () {
       const { data, error } = await sb.from("entregas").insert(rec).select().single();
       if (error) throw error;
       return data;
+    },
+
+    /* busca o catálogo de produtos (custo/venda/volume), vindo da
+       tabela produtos_venda — carregado a partir da planilha de vendas */
+    async loadProdutosVenda() {
+      requireSupa();
+      const { data, error } = await sb.from("produtos_venda").select("*").order("venda", { ascending: false });
+      if (error) throw error;
+      return data || [];
     },
   };
 })();
